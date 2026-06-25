@@ -35,4 +35,8 @@ return [
         'client_id' => env('GOOGLE_CLIENT_ID', '794936788729-jf5jug4aut3caoa6kpilouiugt4h9o7h.apps.googleusercontent.com'),
     ],
 
+    'deepseek' => [
+        'api_key' => env('DEEPSEEK_API_KEY', ''),
+    ],
+
 ];

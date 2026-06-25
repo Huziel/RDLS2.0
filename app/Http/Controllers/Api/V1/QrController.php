@@ -20,7 +20,7 @@ class QrController extends Controller
             'label' => 'nullable|string',
         ]);
 
-        $baseUrl = 'http://localhost:5173';
+        $baseUrl = rtrim(config('app.url'), '/');
         $type = $request->type;
         $targetId = $request->target_id;
 

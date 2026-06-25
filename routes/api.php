@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\V1\CouponController;
 use App\Http\Controllers\Api\V1\CrmController;
 use App\Http\Controllers\Api\V1\CustomPageController;
 use App\Http\Controllers\Api\V1\CustomizerController;
+use App\Http\Controllers\Api\V1\AdGeneratorController;
 use App\Http\Controllers\Api\V1\AdminController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\MarketplaceController;
@@ -180,6 +181,10 @@ Route::prefix('v1')->group(function () {
         Route::post('customizer/ai-suggest', [CustomizerController::class, 'aiSuggest']);
         Route::post('customizer/ai-template', [CustomizerController::class, 'aiTemplate']);
         Route::post('customizer/ai-css', [CustomizerController::class, 'aiCss']);
+
+        // Ad Generator (AI)
+        Route::post('ad-generator/generate', [AdGeneratorController::class, 'generateAd']);
+        Route::post('ad-generator/description', [AdGeneratorController::class, 'generateDescription']);
 
         // Super Admin
         Route::get('admin/stats', [AdminController::class, 'stats']);
