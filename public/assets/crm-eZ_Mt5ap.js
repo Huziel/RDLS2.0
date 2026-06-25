@@ -1,1 +1,0 @@
-import{a as e}from"./index-y7ZGmFwY.js";const n={list(t){return e.get("/crm/clients",{params:t})},get(t){return e.get(`/crm/clients/${t}`)},create(t){return e.post("/crm/clients",t)},update(t,r){return e.put(`/crm/clients/${t}`,r)},delete(t){return e.delete(`/crm/clients/${t}`)},tags(){return e.get("/crm/tags")},sync(){return e.post("/crm/sync")}};export{n as c};
