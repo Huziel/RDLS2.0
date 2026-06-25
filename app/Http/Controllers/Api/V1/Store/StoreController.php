@@ -100,6 +100,7 @@ class StoreController extends Controller
         // Only include fields that were actually sent in the request
         $data = [];
         foreach ($validated as $key => $value) {
+            if ($key === 'sections') continue; // handled separately below
             if (!$request->has($key)) continue;
             $columnMap = [
                 'nombre_tienda' => 'nombreTienda',
@@ -118,11 +119,21 @@ class StoreController extends Controller
                 'nombre_propietario2' => 'namePrope2',
                 'booking_days' => 'booking_days',
                 'booking_hours' => 'booking_hours',
-                'sections' => 'sections',
             ];
             if (isset($columnMap[$key])) {
                 $data[$columnMap[$key]] = $value;
             }
+        }
+        // Sections: save directly from raw request body
+        $all = $request->all();
+        if (array_key_exists('sections', $all)) {
+            $data['sections'] = $all['sections'];
+        }
+
+        // Sections: save directly from raw request body
+        $all = $request->all();
+        if (array_key_exists('sections', $all)) {
+            $data['sections'] = $all['sections'];
         }
 
         if ($extra) {
@@ -133,8 +144,9 @@ class StoreController extends Controller
         }
 
         return response()->json([
-            'data' => StoreExtraResource::make($extra),
-            'message' => 'Información adicional actualizada.',
+            'data' => StoreExtraResource::make($extra->fresh()),
+            'message' => 'Informacion adicional actualizada.',
+            'debug_sections_saved' => isset($data['sections']),
         ]);
     }
 
