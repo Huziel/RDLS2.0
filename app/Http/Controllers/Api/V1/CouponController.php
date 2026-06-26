@@ -13,7 +13,7 @@ class CouponController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $coupons = Coupon::with('products')->where('idTienda', $store->id)
             ->orderByDesc('id')->get();
@@ -24,7 +24,7 @@ class CouponController extends Controller
     public function store(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $validated = $request->validate([
             'nombre' => ['required', 'string'],
@@ -73,7 +73,7 @@ class CouponController extends Controller
     public function destroy(Request $request, $id)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         Coupon::where('idTienda', $store->id)->where('id', $id)->delete();
 

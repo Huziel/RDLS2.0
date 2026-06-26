@@ -68,7 +68,7 @@ class OrderController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $orders = PurchaseOrder::with(['cartItems.productData', 'shippingForm'])
             ->where('serial', $store->serial)
@@ -227,7 +227,7 @@ class OrderController extends Controller
     public function confirmPayment(Request $request, $id)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $order = PurchaseOrder::where('serial', $store->serial)->findOrFail($id);
 

@@ -17,7 +17,7 @@ class DashboardController extends Controller
     public function stats(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
         $today = now()->format('Y-m-d');
 
         // Counts

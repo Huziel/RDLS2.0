@@ -12,7 +12,7 @@ class CategoryController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $categories = Product::byStore($store->createdby)
             ->where('category', '!=', 'null')

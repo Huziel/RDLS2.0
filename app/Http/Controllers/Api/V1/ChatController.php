@@ -58,7 +58,7 @@ class ChatController extends Controller
     // Store owner: list conversations
     public function storeConversations(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $convs = ChatConversation::where('store_id', $store->id)->orderByDesc('last_message_at')->orderByDesc('id')->paginate(20);
         $data = $convs->through(fn($c) => $this->formatConversation($c));
         return response()->json(['data' => $data->items(), 'meta' => ['current_page' => $convs->currentPage(), 'last_page' => $convs->lastPage(), 'total' => $convs->total()]]);
@@ -68,7 +68,7 @@ class ChatController extends Controller
     public function storeSend(Request $request, $conversationId)
     {
         $request->validate(['message' => 'required|string']);
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $conv = ChatConversation::where('store_id', $store->id)->findOrFail($conversationId);
 
         ChatMessage::create(['conversation_id' => $conv->id, 'sender_type' => 'store', 'message' => $request->message]);
@@ -80,7 +80,7 @@ class ChatController extends Controller
     // Store owner: get messages
     public function storeMessages(Request $request, $conversationId)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $conv = ChatConversation::where('store_id', $store->id)->findOrFail($conversationId);
         $since = $request->input('since_id', 0);
         $msgs = ChatMessage::where('conversation_id', $conv->id)->where('id', '>', $since)->orderBy('id')->get();
@@ -92,7 +92,7 @@ class ChatController extends Controller
     // Store owner: close conversation
     public function close(Request $request, $conversationId)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $conv = ChatConversation::where('store_id', $store->id)->findOrFail($conversationId);
         $conv->update(['status' => 'closed']);
         return response()->json(['message' => 'Conversacion cerrada.']);

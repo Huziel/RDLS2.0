@@ -173,8 +173,16 @@ class AdminController extends Controller
             \App\Models\ProductStock::query()->delete();
             \App\Models\Product::query()->delete();
 
+            $superAdminIds = User::role('super-admin')->pluck('id')->toArray();
+            $superAdminEmails = User::role('super-admin')->pluck('name')->toArray();
+            $protectedIds = array_merge($superAdminIds, $keepUsers);
+
+            // Protect super-admin stores
+            $superAdminStoreIds = \App\Models\Store::whereIn('createdby', $superAdminEmails)->pluck('id')->toArray();
+            $allProtectedStores = array_merge($superAdminStoreIds, $keepStores);
+
             $storeQuery = \App\Models\Store::query();
-            if (!empty($keepStores)) $storeQuery->whereNotIn('id', $keepStores);
+            if (!empty($allProtectedStores)) $storeQuery->whereNotIn('id', $allProtectedStores);
             $storeQuery->delete();
             \App\Models\StoreExtra::query()->delete();
             \App\Models\StoreColor::query()->delete();
@@ -182,8 +190,6 @@ class AdminController extends Controller
             \App\Models\StorePassword::query()->delete();
             \App\Models\StoreFeature::query()->delete();
 
-            $superAdminIds = User::role('super-admin')->pluck('id')->toArray();
-            $protectedIds = array_merge($superAdminIds, $keepUsers);
             User::whereNotIn('id', $protectedIds)->delete();
 
             \Laravel\Sanctum\PersonalAccessToken::query()->delete();
