@@ -128,4 +128,73 @@ class AdminController extends Controller
             'inactive' => User::where('active', 0)->count(),
         ]]);
     }
+
+    public function cleanData(Request $request)
+    {
+        if (!$request->user()->hasRole('super-admin')) return response()->json(['message' => 'No autorizado.'], 403);
+
+        $keepUsers = $request->input('keep_users', []);
+        $keepStores = $request->input('keep_stores', []);
+
+        \Illuminate\Support\Facades\DB::transaction(function () use ($keepUsers, $keepStores) {
+            \App\Models\ChatMessage::query()->delete();
+            \App\Models\ChatConversation::query()->delete();
+            \App\Models\LoyaltyTransaction::query()->delete();
+            \App\Models\LoyaltyPoint::query()->delete();
+            \App\Models\LoyaltyConfig::query()->delete();
+            \App\Models\DeliveryEvidence::query()->delete();
+            \App\Models\DeliveryLocation::query()->delete();
+            \App\Models\ShippingOrder::query()->delete();
+            \App\Models\DeliveryLink::query()->delete();
+            \App\Models\DeliveryPhoto::query()->delete();
+            \App\Models\DeliveryProfile::query()->delete();
+            \App\Models\DeliveryWallet::query()->delete();
+            \App\Models\ExtraCharge::query()->delete();
+            \App\Models\ShippingForm::query()->delete();
+            \App\Models\VerificationCode::query()->delete();
+            \App\Models\PurchaseOrder::query()->delete();
+            \App\Models\PosOrderDetailHistory::query()->delete();
+            \App\Models\PosOrderHistory::query()->delete();
+            \App\Models\PosOrderDetail::query()->delete();
+            \App\Models\PosOrder::query()->delete();
+            \App\Models\CartAddon::query()->delete();
+            \App\Models\Cart::query()->delete();
+            \App\Models\Appointment::query()->delete();
+            \App\Models\BarterProduct::query()->delete();
+            \App\Models\Barter::query()->delete();
+            \App\Models\Client::query()->delete();
+            \App\Models\CouponProduct::query()->delete();
+            \App\Models\Coupon::query()->delete();
+            \App\Models\StoreRating::query()->delete();
+            \App\Models\QrCode::query()->delete();
+            \App\Models\ProductAddon::query()->delete();
+            \App\Models\ProductBarcode::query()->delete();
+            \App\Models\ProductImage::query()->delete();
+            \App\Models\ProductStock::query()->delete();
+            \App\Models\Product::query()->delete();
+
+            $storeQuery = \App\Models\Store::query();
+            if (!empty($keepStores)) $storeQuery->whereNotIn('id', $keepStores);
+            $storeQuery->delete();
+            \App\Models\StoreExtra::query()->delete();
+            \App\Models\StoreColor::query()->delete();
+            \App\Models\StoreTheme::query()->delete();
+            \App\Models\StorePassword::query()->delete();
+            \App\Models\StoreFeature::query()->delete();
+
+            $superAdminIds = User::role('super-admin')->pluck('id')->toArray();
+            $protectedIds = array_merge($superAdminIds, $keepUsers);
+            User::whereNotIn('id', $protectedIds)->delete();
+
+            \Laravel\Sanctum\PersonalAccessToken::query()->delete();
+            \App\Models\MediaPhoto::query()->delete();
+            \App\Models\MediaVideo::query()->delete();
+            \App\Models\DeviceToken::query()->delete();
+            \App\Models\PaidModule::query()->delete();
+            \App\Models\ApartadoConfig::query()->delete();
+        });
+
+        $remaining = User::count();
+        return response()->json(['message' => "Datos de prueba eliminados. Quedan $remaining usuarios.", 'data' => ['remaining_users' => $remaining]]);
+    }
 }

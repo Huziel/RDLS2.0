@@ -87,9 +87,13 @@ class CartController extends Controller
         $request->validate(['quantity' => ['required', 'integer', 'min:1']]);
 
         $cartSessionId = $this->getCartId($request);
-        $item = Cart::active()->byUser($cartSessionId)->findOrFail($cartId);
+        $item = Cart::active()->byUser($cartSessionId)->byStore($storeSerial)->find($cartId);
 
-        $unitPrice = $item->price / $item->cant;
+        if (!$item) {
+            return response()->json(['message' => 'Item no encontrado en el carrito.'], 404);
+        }
+
+        $unitPrice = $item->price / max($item->cant, 1);
         $item->update([
             'cant' => $request->quantity,
             'price' => $unitPrice * $request->quantity,
@@ -101,7 +105,8 @@ class CartController extends Controller
     public function destroy(Request $request, $storeSerial, $cartId)
     {
         $cartSessionId = $this->getCartId($request);
-        Cart::active()->byUser($cartSessionId)->findOrFail($cartId)->delete();
+        $item = Cart::active()->byUser($cartSessionId)->byStore($storeSerial)->find($cartId);
+        if ($item) $item->delete();
 
         return response()->json(['message' => 'Producto eliminado del carrito.']);
     }

@@ -8,6 +8,9 @@ use App\Models\Cart;
 use App\Models\PurchaseOrder;
 use App\Models\Store;
 use App\Models\User;
+use App\Models\Client;
+use App\Models\LoyaltyConfig;
+use App\Models\LoyaltyPoint;
 use App\Services\MailService;
 use Illuminate\Http\Request;
 
@@ -43,6 +46,9 @@ class OrderController extends Controller
 
             // Notify store owner via email
             $this->notifyStoreOwner($order, $storeSerial);
+
+            // Auto-earn loyalty points for the customer
+            $this->earnLoyaltyPoints($order, $storeSerial, $request->telefono);
 
             return response()->json([
                 'data' => [
@@ -228,6 +234,24 @@ class OrderController extends Controller
         \App\Models\Cart::where('orderC', $order->order)->update(['status' => '3']);
 
         return response()->json(['message' => 'Pago confirmado.', 'data' => ['order' => $order->order, 'status' => '3']]);
+    }
+
+    private function earnLoyaltyPoints($order, $storeSerial, $phone)
+    {
+        try {
+            $store = Store::where('serial', $storeSerial)->first();
+            if (!$store) return;
+            $config = LoyaltyConfig::getConfig($store->id);
+            if (!$config->enabled) return;
+
+            $client = Client::where('store_id', $store->id)->where('phone', $phone)->first();
+            if (!$client) return;
+
+            $points = (int) floor($order->total * $config->points_per_peso);
+            if ($points > 0) {
+                LoyaltyPoint::addPoints($store->id, $client->id, $points, 'earn', "Compra {$order->order}", $order->order);
+            }
+        } catch (\Exception $e) {}
     }
 
     // Customer order history

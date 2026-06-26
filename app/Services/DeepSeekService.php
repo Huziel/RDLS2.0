@@ -6,8 +6,13 @@ use Illuminate\Support\Facades\Http;
 
 class DeepSeekService
 {
-    private string $apiKey = 'sk-e23ea84fb438495c94f049246e3d8a75';
+    private string $apiKey;
     private string $baseUrl = 'https://api.deepseek.com/v1';
+
+    public function __construct()
+    {
+        $this->apiKey = config('services.deepseek.api_key') ?: 'sk-e23ea84fb438495c94f049246e3d8a75';
+    }
 
     public function generate(string $prompt, string $systemPrompt = ''): ?string
     {
