@@ -19,7 +19,7 @@ class StoreController extends Controller
     public function show(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         return response()->json([
             'data' => StoreResource::make($store->load('extra')),
@@ -29,7 +29,7 @@ class StoreController extends Controller
     public function update(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $validated = $request->validate([
             'phone' => ['nullable', 'string', 'max:20'],
@@ -68,7 +68,7 @@ class StoreController extends Controller
     public function extraInfo(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         if ($request->isMethod('get')) {
             $extra = StoreExtra::where('idTienda', $store->id)->first();
@@ -153,7 +153,7 @@ class StoreController extends Controller
     public function banner(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $request->validate(['banner' => ['required', 'string']]);
 
@@ -178,7 +178,7 @@ class StoreController extends Controller
     public function colors(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         if ($request->isMethod('get')) {
             $colors = StoreColor::where('idStore', $store->id)->first();
@@ -212,7 +212,7 @@ class StoreController extends Controller
     public function theme(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         if ($request->isMethod('get')) {
             $theme = StoreTheme::where('userId', $store->id)->first();
@@ -242,7 +242,7 @@ class StoreController extends Controller
     public function catalogPassword(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         if ($request->isMethod('get')) {
             $pass = StorePassword::where('idTienda', $store->id)->first();
@@ -269,7 +269,7 @@ class StoreController extends Controller
     public function removeCatalogPassword(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         StorePassword::where('idTienda', $store->id)->delete();
 
@@ -304,7 +304,7 @@ class StoreController extends Controller
     public function featureToggle(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $request->validate([
             'component_id' => ['required', 'integer'],
@@ -334,7 +334,7 @@ class StoreController extends Controller
     public function getFeatures(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $features = StoreFeature::where('idTienda', $store->id)->get();
 
@@ -345,7 +345,7 @@ class StoreController extends Controller
     public function shippingCosts(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         if ($request->isMethod('get')) {
             $costs = $store->color; // Format: "10|4|10|1" (base|medio|largo|tiempo)
@@ -444,7 +444,7 @@ class StoreController extends Controller
     public function ratings(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $ratings = StoreRating::with('user:id,name')
             ->where('idTieda', $store->id)

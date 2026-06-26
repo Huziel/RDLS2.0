@@ -17,7 +17,7 @@ class ProductController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $query = Product::byStore($store->createdby)->with(['stock', 'barcode', 'images']);
 
@@ -41,7 +41,7 @@ class ProductController extends Controller
     public function store(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $validated = $request->validate([
             'nombre' => ['required', 'string', 'max:255'],
@@ -102,7 +102,7 @@ class ProductController extends Controller
     public function show(Request $request, $id)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $product = Product::byStore($store->createdby)
             ->with(['stock', 'barcode', 'images', 'addons'])
@@ -116,7 +116,7 @@ class ProductController extends Controller
     public function update(Request $request, $id)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $product = Product::byStore($store->createdby)->findOrFail($id);
 
@@ -182,7 +182,7 @@ class ProductController extends Controller
     public function destroy(Request $request, $id)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $product = Product::byStore($store->createdby)->findOrFail($id);
         $product->delete();
@@ -210,7 +210,7 @@ class ProductController extends Controller
     public function searchByBarcode(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $request->validate(['code' => ['required', 'string']]);
 

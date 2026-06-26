@@ -20,7 +20,7 @@ class ProductAddonController extends Controller
     public function index(Request $request, $productId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         Product::byStore($store->createdby)->findOrFail($productId);
 
@@ -32,7 +32,7 @@ class ProductAddonController extends Controller
     public function store(Request $request, $productId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         Product::byStore($store->createdby)->findOrFail($productId);
 
@@ -64,7 +64,7 @@ class ProductAddonController extends Controller
     public function update(Request $request, $productId, $addonId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         Product::byStore($store->createdby)->findOrFail($productId);
 
@@ -90,7 +90,7 @@ class ProductAddonController extends Controller
     public function destroy(Request $request, $productId, $addonId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         Product::byStore($store->createdby)->findOrFail($productId);
 

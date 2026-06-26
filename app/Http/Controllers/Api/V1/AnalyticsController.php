@@ -14,7 +14,7 @@ class AnalyticsController extends Controller
     public function overview(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $totalRevenue = (float) PurchaseOrder::where('serial', $store->serial)->sum('total')
             + (float) PosOrderHistory::where('creator', $store->createdby)->sum('total');
@@ -39,7 +39,7 @@ class AnalyticsController extends Controller
     public function salesByDay(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
         $days = $request->get('days', 30);
 
         $online = PurchaseOrder::selectRaw('date, SUM(total) as total')
@@ -66,7 +66,7 @@ class AnalyticsController extends Controller
     public function topProducts(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $top = \DB::table('data as p')
             ->join('cart as c', 'c.product', '=', 'p.id')
@@ -83,7 +83,7 @@ class AnalyticsController extends Controller
     public function peakHours(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $hours = PosOrderHistory::selectRaw('HOUR(fecha) as hour, COUNT(*) as count, SUM(total) as revenue')
             ->where('creator', $store->createdby)
@@ -103,7 +103,7 @@ class AnalyticsController extends Controller
     public function monthlyComparison(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $months = [];
         for ($i = 5; $i >= 0; $i--) {

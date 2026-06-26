@@ -12,7 +12,7 @@ class CrmController extends Controller
 {
     public function index(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $query = Client::where('store_id', $store->id);
 
         if ($request->has('search')) {
@@ -29,7 +29,7 @@ class CrmController extends Controller
 
     public function show($id)
     {
-        $store = Store::where('createdby', request()->user()->name)->firstOrFail();
+        $store = Store::byOwner(request()->user()->name)->firstOrFail();
         $client = Client::where('store_id', $store->id)->findOrFail($id);
 
         $orders = PurchaseOrder::where('nombre', 'like', '%' . $client->name . '%')
@@ -41,7 +41,7 @@ class CrmController extends Controller
 
     public function store(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $validated = $request->validate([
             'name' => 'required|string', 'email' => 'nullable|email', 'phone' => 'nullable|string',
             'tags' => 'nullable|array', 'notes' => 'nullable|string', 'stage' => 'nullable|string',
@@ -53,7 +53,7 @@ class CrmController extends Controller
 
     public function update(Request $request, $id)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $client = Client::where('store_id', $store->id)->findOrFail($id);
         $client->update($request->only(['name', 'email', 'phone', 'tags', 'notes', 'stage']));
         return response()->json(['data' => $client, 'message' => 'Cliente actualizado.']);
@@ -61,14 +61,14 @@ class CrmController extends Controller
 
     public function destroy($id)
     {
-        $store = Store::where('createdby', request()->user()->name)->firstOrFail();
+        $store = Store::byOwner(request()->user()->name)->firstOrFail();
         Client::where('store_id', $store->id)->where('id', $id)->delete();
         return response()->json(['message' => 'Cliente eliminado.']);
     }
 
     public function tags(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $tags = Client::where('store_id', $store->id)->whereNotNull('tags')->pluck('tags')
             ->flatten()->unique()->values();
         return response()->json(['data' => $tags]);
@@ -76,7 +76,7 @@ class CrmController extends Controller
 
     public function syncFromOrders(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $orders = PurchaseOrder::where('serial', $store->serial)
             ->whereNotNull('nombre')
             ->where('nombre', '!=', '')

@@ -17,7 +17,7 @@ class PosController extends Controller
     public function activeOrders(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $orders = PosOrder::active($store->createdby)
             ->with('details')
@@ -30,7 +30,7 @@ class PosController extends Controller
     public function createOrder(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $request->validate(['nombre' => ['required', 'string']]);
 
@@ -55,7 +55,7 @@ class PosController extends Controller
     public function addProduct(Request $request, $orderId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $order = PosOrder::where('creator', $store->createdby)
             ->where('estado', '0')
@@ -86,7 +86,7 @@ class PosController extends Controller
     public function updateProduct(Request $request, $orderId, $detailId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         PosOrder::where('creator', $store->createdby)->where('estado', '0')->findOrFail($orderId);
 
@@ -104,7 +104,7 @@ class PosController extends Controller
     public function removeProduct(Request $request, $orderId, $detailId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         PosOrder::where('creator', $store->createdby)->where('estado', '0')->findOrFail($orderId);
         PosOrderDetail::where('idPventaGeneral', $orderId)->where('id', $detailId)->delete();
@@ -115,7 +115,7 @@ class PosController extends Controller
     public function deleteOrder(Request $request, $orderId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         PosOrder::where('creator', $store->createdby)->where('estado', '0')->findOrFail($orderId);
         PosOrderDetail::where('idPventaGeneral', $orderId)->delete();
@@ -127,7 +127,7 @@ class PosController extends Controller
     public function saveOrder(Request $request, $orderId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $order = PosOrder::where('creator', $store->createdby)
             ->where('estado', '0')
@@ -153,7 +153,7 @@ class PosController extends Controller
     public function payOrder(Request $request, $orderId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $order = PosOrder::where('creator', $store->createdby)
             ->where('estado', '1')
@@ -207,7 +207,7 @@ class PosController extends Controller
     public function history(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $orders = PosOrderHistory::where('creator', $store->createdby)
             ->with('details')
@@ -220,7 +220,7 @@ class PosController extends Controller
     public function ticket($noOrder)
     {
         $user = request()->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $order = PosOrderHistory::with('details')
             ->where('creator', $store->createdby)

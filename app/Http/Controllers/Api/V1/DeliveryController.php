@@ -18,7 +18,7 @@ class DeliveryController extends Controller
     public function emitOrder(Request $request, $orderId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $purchaseOrder = PurchaseOrder::findOrFail($orderId);
 
@@ -66,7 +66,7 @@ class DeliveryController extends Controller
     public function linkedDeliverers(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $links = DeliveryLink::with(['deliver:id,name', 'deliver.deliveryProfile', 'deliver.deliveryProfile.photo'])
             ->where('store', $store->id)
@@ -164,7 +164,7 @@ class DeliveryController extends Controller
     public function verifyDeliver(Request $request, $linkId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
         $link = DeliveryLink::where('store', $store->id)->findOrFail($linkId);
         $profile = \App\Models\DeliveryProfile::where('idLog', $link->deliveryMan)->first();
 
@@ -185,7 +185,7 @@ class DeliveryController extends Controller
     public function toggleBlock(Request $request, $linkId)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $link = DeliveryLink::where('store', $store->id)->findOrFail($linkId);
         $link->update(['bloqueo' => $link->bloqueo == '1' ? '0' : '1']);

@@ -15,14 +15,14 @@ class LoyaltyController extends Controller
     // Store owner: get config
     public function config(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         return response()->json(['data' => LoyaltyConfig::getConfig($store->id)]);
     }
 
     // Store owner: update config
     public function updateConfig(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $config = LoyaltyConfig::getConfig($store->id);
         $config->update($request->only(['points_per_peso', 'pesos_per_point', 'minimum_points_to_redeem', 'enabled']));
         return response()->json(['data' => $config->fresh(), 'message' => 'Configuracion guardada.']);
@@ -71,7 +71,7 @@ class LoyaltyController extends Controller
     // Store owner: list clients with points
     public function clients(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $points = LoyaltyPoint::with('client')->where('store_id', $store->id)
             ->whereHas('client')->orderByDesc('points')->paginate(20);
         $config = LoyaltyConfig::getConfig($store->id);
@@ -87,7 +87,7 @@ class LoyaltyController extends Controller
     // Store owner: add/subtract points manually
     public function adjustPoints(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $request->validate(['client_id' => 'required|integer', 'points' => 'required|integer', 'description' => 'nullable|string']);
         if ($request->points > 0) {
             LoyaltyPoint::addPoints($store->id, $request->client_id, $request->points, 'manual', $request->description);
@@ -100,7 +100,7 @@ class LoyaltyController extends Controller
     // Store owner: transactions history
     public function transactions(Request $request)
     {
-        $store = Store::where('createdby', $request->user()->name)->firstOrFail();
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
         $tx = LoyaltyTransaction::where('store_id', $store->id)->with('client:id,name,phone')
             ->when($request->client_id, fn($q) => $q->where('client_id', $request->client_id))
             ->orderByDesc('id')->paginate(30);

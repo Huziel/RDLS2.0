@@ -12,7 +12,7 @@ class QrController extends Controller
     public function generate(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
 
         $request->validate([
             'type' => 'required|in:store,product,menu,catalog,promo',
@@ -81,7 +81,7 @@ class QrController extends Controller
     public function list(Request $request)
     {
         $user = $request->user();
-        $store = Store::where('createdby', $user->name)->firstOrFail();
+        $store = Store::byOwner($user->name)->firstOrFail();
         $qrs = QrCode::where('store_id', $store->id)->orderByDesc('id')->get()
             ->map(fn($q) => ['id'=>$q->id,'type'=>$q->type,'label'=>$q->label,'url'=>$q->target_url,'image'=>asset($q->image_path),'scans'=>$q->scans,'created_at'=>$q->created_at]);
         return response()->json(['data' => $qrs]);
