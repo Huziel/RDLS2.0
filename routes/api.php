@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AppointmentController;
 use App\Http\Controllers\Api\V1\BarterController;
 use App\Http\Controllers\Api\V1\CategoryController;
+use App\Http\Controllers\Api\V1\ChatController;
 use App\Http\Controllers\Api\V1\CouponController;
 use App\Http\Controllers\Api\V1\CrmController;
 use App\Http\Controllers\Api\V1\CustomPageController;
@@ -18,6 +19,7 @@ use App\Http\Controllers\Api\V1\CustomizerController;
 use App\Http\Controllers\Api\V1\AdGeneratorController;
 use App\Http\Controllers\Api\V1\AdminController;
 use App\Http\Controllers\Api\V1\DashboardController;
+use App\Http\Controllers\Api\V1\LoyaltyController;
 use App\Http\Controllers\Api\V1\MarketplaceController;
 use App\Http\Controllers\Api\V1\QrController;
 use App\Http\Controllers\Api\V1\UploadController;
@@ -186,8 +188,22 @@ Route::prefix('v1')->group(function () {
         Route::post('ad-generator/generate', [AdGeneratorController::class, 'generateAd']);
         Route::post('ad-generator/description', [AdGeneratorController::class, 'generateDescription']);
 
+        // Loyalty Program
+        Route::get('loyalty/config', [LoyaltyController::class, 'config']);
+        Route::put('loyalty/config', [LoyaltyController::class, 'updateConfig']);
+        Route::get('loyalty/clients', [LoyaltyController::class, 'clients']);
+        Route::post('loyalty/adjust', [LoyaltyController::class, 'adjustPoints']);
+        Route::get('loyalty/transactions', [LoyaltyController::class, 'transactions']);
+
+        // Chat (store owner)
+        Route::get('chat/conversations', [ChatController::class, 'storeConversations']);
+        Route::get('chat/conversations/{id}/messages', [ChatController::class, 'storeMessages']);
+        Route::post('chat/conversations/{id}/send', [ChatController::class, 'storeSend']);
+        Route::post('chat/conversations/{id}/close', [ChatController::class, 'close']);
+
         // Super Admin
         Route::get('admin/stats', [AdminController::class, 'stats']);
+        Route::post('admin/clean-data', [AdminController::class, 'cleanData']);
         Route::get('admin/users', [AdminController::class, 'users']);
         Route::put('admin/users/{id}/toggle', [AdminController::class, 'toggleActive']);
         Route::put('admin/users/{id}/password', [AdminController::class, 'changePassword']);
@@ -241,6 +257,15 @@ Route::prefix('v1')->group(function () {
 
     // Public order detail (session-based, for thank-you page)
     Route::get('public/orders/{id}', [OrderController::class, 'publicOrderDetail']);
+
+    // Public loyalty (check points + redeem)
+    Route::post('loyalty/check', [LoyaltyController::class, 'clientPoints']);
+    Route::post('loyalty/redeem', [LoyaltyController::class, 'redeem']);
+
+    // Public chat (customer)
+    Route::post('chat/start', [ChatController::class, 'customerConversation']);
+    Route::get('chat/{id}/messages', [ChatController::class, 'customerMessages']);
+    Route::post('chat/{id}/send', [ChatController::class, 'customerSend']);
 
     // SPA catch-all: serve Vue index.html for any non-API request (must be LAST)
     Route::get('/{any}', function () {
