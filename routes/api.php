@@ -214,6 +214,7 @@ Route::prefix('v1')->group(function () {
         Route::delete('admin/subscription-plans/{id}', [SubscriptionController::class, 'deletePlan']);
         Route::get('admin/store-subscriptions', [SubscriptionController::class, 'indexStoreSubscriptions']);
         Route::post('admin/assign-subscription', [SubscriptionController::class, 'assignSubscription']);
+        Route::post('admin/create-all-subscriptions', [SubscriptionController::class, 'createAllSubscriptions']);
 
         // Subscription (store owner)
         Route::get('my-subscription', [SubscriptionController::class, 'mySubscription']);
