@@ -31,6 +31,7 @@ use App\Http\Controllers\Api\V1\PosController;
 use App\Http\Controllers\Api\V1\ProductAddonController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\Store\StoreController;
+use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\UserController;
 use Illuminate\Support\Facades\Route;
 
@@ -142,6 +143,7 @@ Route::prefix('v1')->group(function () {
         Route::get('delivery/profile', [DeliveryController::class, 'profile']);
         Route::put('delivery/profile', [DeliveryController::class, 'updateProfile']);
         Route::get('delivery/wallet', [DeliveryController::class, 'wallet']);
+        Route::get('delivery/history', [DeliveryController::class, 'deliveryHistory']);
         Route::post('delivery/evidence', [DeliveryController::class, 'uploadEvidence']);
 
         // Payments
@@ -204,6 +206,17 @@ Route::prefix('v1')->group(function () {
         // Super Admin
         Route::get('admin/stats', [AdminController::class, 'stats']);
         Route::post('admin/clean-data', [AdminController::class, 'cleanData']);
+
+        // Subscription Plans (super-admin)
+        Route::get('admin/subscription-plans', [SubscriptionController::class, 'indexPlans']);
+        Route::post('admin/subscription-plans', [SubscriptionController::class, 'storePlan']);
+        Route::put('admin/subscription-plans/{id}', [SubscriptionController::class, 'updatePlan']);
+        Route::delete('admin/subscription-plans/{id}', [SubscriptionController::class, 'deletePlan']);
+        Route::get('admin/store-subscriptions', [SubscriptionController::class, 'indexStoreSubscriptions']);
+        Route::post('admin/assign-subscription', [SubscriptionController::class, 'assignSubscription']);
+
+        // Subscription (store owner)
+        Route::get('my-subscription', [SubscriptionController::class, 'mySubscription']);
         Route::get('admin/users', [AdminController::class, 'users']);
         Route::put('admin/users/{id}/toggle', [AdminController::class, 'toggleActive']);
         Route::put('admin/users/{id}/password', [AdminController::class, 'changePassword']);

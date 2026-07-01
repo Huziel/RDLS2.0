@@ -484,6 +484,30 @@ class DeliveryController extends Controller
         return response()->json(['data' => ['balance' => $wallet ? (float) $wallet->cant : 0]]);
     }
 
+    // Deliver: delivery history
+    public function deliveryHistory(Request $request)
+    {
+        $user = $request->user();
+        $completed = ShippingOrder::with(['purchaseOrder', 'store'])
+            ->where('delivery', $user->id)
+            ->where('status', '3')
+            ->orderByDesc('id')
+            ->limit(50)
+            ->get()
+            ->map(fn($s) => [
+                'id' => $s->id,
+                'fecha' => $s->fechaIn,
+                'order_id' => $s->purchaseOrder->order ?? 'N/A',
+                'cliente' => $s->purchaseOrder->nombre ?? 'N/A',
+                'total' => (float) ($s->purchaseOrder->total ?? 0),
+                'envio' => (float) ($s->purchaseOrder->totEnvio ?? 0),
+                'store_name' => $s->store->extra->nombreTienda ?? $s->store->serial ?? 'N/A',
+                'store_serial' => $s->store->serial ?? 'N/A',
+            ]);
+
+        return response()->json(['data' => $completed]);
+    }
+
     // Deliver: upload evidence
     public function uploadEvidence(Request $request)
     {

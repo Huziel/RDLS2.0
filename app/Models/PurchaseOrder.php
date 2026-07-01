@@ -33,4 +33,9 @@ class PurchaseOrder extends Model
     {
         return $this->hasMany(ExtraCharge::class, 'orderP', 'order');
     }
+
+    public function shippingOrder()
+    {
+        return $this->hasOne(ShippingOrder::class, 'ordenCompra', 'id');
+    }
 }
