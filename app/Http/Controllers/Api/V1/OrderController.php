@@ -50,6 +50,9 @@ class OrderController extends Controller
             // Auto-earn loyalty points for the customer
             $this->earnLoyaltyPoints($order, $storeSerial, $request->telefono);
 
+            // Track sale for subscription
+            $this->trackSubscriptionSale($storeSerial, $order->total);
+
             return response()->json([
                 'data' => [
                     'order_id' => $order->order,
@@ -70,13 +73,14 @@ class OrderController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        $orders = PurchaseOrder::with(['cartItems.productData', 'shippingForm'])
+        $orders = PurchaseOrder::with(['cartItems.productData', 'shippingForm', 'shippingOrder.deliver'])
             ->where('serial', $store->serial)
             ->orderByDesc('id')
             ->paginate($request->get('per_page', 20));
 
         $result = $orders->through(function ($order) {
             $cartStatuses = $order->cartItems->pluck('status')->unique()->toArray();
+            $shipping = $order->shippingOrder;
             return [
                 'id' => $order->id,
                 'order' => $order->order,
@@ -88,6 +92,13 @@ class OrderController extends Controller
                 'paid' => in_array('3', $cartStatuses),
                 'lat' => $order->lat,
                 'lng' => $order->long,
+                'delivery_status' => $shipping ? [
+                    'id' => $shipping->id,
+                    'status' => $shipping->status,
+                    'status_label' => ['0'=>'Pendiente repartidor','1'=>'En camino','2'=>'En proceso','3'=>'Entregado'][$shipping->status] ?? $shipping->status,
+                    'delivery_id' => $shipping->delivery,
+                    'delivery_name' => $shipping->deliver->name ?? null,
+                ] : null,
                 'shipping' => $order->shippingForm ? [
                     'nombre' => $order->shippingForm->nombre,
                     'direccion' => $order->shippingForm->direccion,
@@ -135,6 +146,13 @@ class OrderController extends Controller
                 ]),
             ]);
 
+        // Check for active shipping and verification code
+        $shippingOrder = \App\Models\ShippingOrder::with('deliver')->where('ordenCompra', $order->id)->first();
+        $verificationCode = null;
+        if ($shippingOrder && in_array($shippingOrder->status, ['1', '2'])) {
+            $verificationCode = \App\Models\VerificationCode::where('orderC', $order->order)->value('code');
+        }
+
         return response()->json([
             'data' => [
                 'id' => $order->id,
@@ -147,6 +165,12 @@ class OrderController extends Controller
                 'lat' => $order->lat,
                 'lng' => $order->long,
                 'items' => $items,
+                'verification_code' => $verificationCode,
+                'shipping_status' => $shippingOrder ? [
+                    'status' => $shippingOrder->status,
+                    'status_label' => ['0'=>'Pendiente','1'=>'En camino','2'=>'En proceso','3'=>'Entregado'][$shippingOrder->status] ?? 'Desconocido',
+                    'delivery_name' => $shippingOrder->deliver->name ?? null,
+                ] : null,
                 'shipping' => $order->shippingForm ? [
                     'nombre' => $order->shippingForm->nombre,
                     'direccion' => $order->shippingForm->direccion,
@@ -250,6 +274,18 @@ class OrderController extends Controller
             $points = (int) floor($order->total * $config->points_per_peso);
             if ($points > 0) {
                 LoyaltyPoint::addPoints($store->id, $client->id, $points, 'earn', "Compra {$order->order}", $order->order);
+            }
+        } catch (\Exception $e) {}
+    }
+
+    private function trackSubscriptionSale($storeSerial, $amount)
+    {
+        try {
+            $store = Store::where('serial', $storeSerial)->first();
+            if (!$store) return;
+            $sub = StoreSubscription::getActive($store->id);
+            if ($sub && $sub->plan->price_percent > 0) {
+                $sub->addSale($amount);
             }
         } catch (\Exception $e) {}
     }
