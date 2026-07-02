@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Models\Client;
 use App\Models\LoyaltyConfig;
 use App\Models\LoyaltyPoint;
+use App\Models\StoreSubscription;
 use App\Services\MailService;
 use Illuminate\Http\Request;
 
