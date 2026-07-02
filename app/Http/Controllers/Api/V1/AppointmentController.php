@@ -25,7 +25,7 @@ class AppointmentController extends Controller
         $a = Appointment::create([
             'idLog' => $request->user()->id, 'nombre' => $validated['nombre'],
             'fechaCreacion' => now()->format('Y-m-d H:i:s'), 'feachaApartada' => $validated['fecha_apartada'],
-            'telefono' => $validated['telefono'] ?? null, 'texto' => $validated['texto'] ?? null, 'activo' => 1,
+            'telefono' => $validated['telefono'] ?? '', 'texto' => $validated['texto'] ?? '', 'activo' => 1,
         ]);
         return response()->json(['data' => $a, 'message' => 'Cita creada.'], 201);
     }
@@ -49,7 +49,7 @@ class AppointmentController extends Controller
         $a = Appointment::create([
             'idLog' => $owner->id, 'nombre' => $validated['nombre'],
             'fechaCreacion' => now()->format('Y-m-d H:i:s'), 'feachaApartada' => $validated['fecha_apartada'],
-            'telefono' => $validated['telefono'], 'texto' => $validated['texto'] ?? null, 'activo' => 1,
+            'telefono' => $validated['telefono'], 'texto' => $validated['texto'] ?? '', 'activo' => 1,
         ]);
 
         $this->notifyAppointment($owner, $a);

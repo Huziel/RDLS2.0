@@ -1,1 +1,0 @@
-import{P as o}from"./ProductForm-kDCXdFPl.js";import{c as r,d as t,b as a,a as m}from"./index-Cbq8Xrtq.js";import"./products-Cnj_OLSX.js";import"./ImageUpload-CZ0jTUr8.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const l={__name:"ProductCreateView",setup(s){return(c,e)=>(m(),r("div",null,[e[0]||(e[0]=t("h2",null,"Nuevo Producto",-1)),a(o)]))}};export{l as default};
