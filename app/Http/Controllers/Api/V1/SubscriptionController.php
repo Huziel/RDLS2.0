@@ -55,15 +55,34 @@ class SubscriptionController extends Controller
     public function indexStoreSubscriptions(Request $request)
     {
         if (!$request->user()->hasRole('super-admin')) abort(403);
-        $subs = StoreSubscription::with(['plan', 'store'])->orderByDesc('id')->paginate(20);
+        $subs = StoreSubscription::with(['plan', 'store.extra'])->orderByDesc('id')->paginate(20);
         $data = $subs->through(fn($s) => [
             'id' => $s->id, 'store_id' => $s->store_id,
-            'store_serial' => $s->store->serial ?? '', 'store_name' => $s->store->extra->nombreTienda ?? '',
-            'plan_name' => $s->plan->name, 'price_percent' => $s->plan->price_percent,
+            'store_serial' => $s->store->serial ?? '', 'store_name' => $s->store->extra->nombreTienda ?? $s->store->serial ?? '',
+            'plan_name' => $s->plan->name ?? 'Sin plan', 'price_percent' => $s->plan->price_percent ?? 0,
             'monthly_sales' => $s->monthly_sales, 'amount_due' => $s->amount_due,
             'status' => $s->status, 'starts_at' => $s->starts_at,
         ]);
         return response()->json(['data' => $data->items(), 'meta' => ['current_page' => $subs->currentPage(), 'last_page' => $subs->lastPage(), 'total' => $subs->total()]]);
+    }
+
+    // Admin: auto-create subscriptions for all existing stores
+    public function createAllSubscriptions(Request $request)
+    {
+        if (!$request->user()->hasRole('super-admin')) abort(403);
+        $plan = SubscriptionPlan::getFreePlan();
+        if (!$plan) return response()->json(['message' => 'No hay plan gratuito configurado.'], 422);
+
+        $storeIds = \App\Models\Store::pluck('id');
+        $count = 0;
+        foreach ($storeIds as $storeId) {
+            $existing = StoreSubscription::where('store_id', $storeId)->where('status', 'active')->first();
+            if (!$existing) {
+                StoreSubscription::create(['store_id' => $storeId, 'subscription_plan_id' => $plan->id, 'status' => 'active', 'starts_at' => now()]);
+                $count++;
+            }
+        }
+        return response()->json(['message' => "$count suscripciones creadas para tiendas existentes."]);
     }
 
     // Admin: assign subscription to store
