@@ -414,6 +414,7 @@ class StoreController extends Controller
             'features' => [
                 'shipping' => $features->isEmpty() ? true : $features->contains(fn($f) => $f->idComponent == 1 && $f->active == 1),
                 'pickup' => $features->isEmpty() ? true : $features->contains(fn($f) => $f->idComponent == 2 && $f->active == 1),
+                'national_shipping' => $features->contains(fn($f) => $f->idComponent == 3 && $f->active == 1),
             ],
             'shipping_costs' => $this->parseShippingCosts($store),
             'location' => ['lat' => $store->lat, 'lng' => $store->long, 'adress' => $store->adress],

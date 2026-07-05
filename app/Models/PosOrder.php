@@ -11,7 +11,7 @@ class PosOrder extends Model
     public $timestamps = false;
 
     protected $fillable = [
-        'noOrder', 'nombre', 'fecha', 'estado', 'total', 'extra', 'descuento', 'tipoPago', 'creator',
+        'noOrder', 'nombre', 'telefono', 'fecha', 'estado', 'total', 'extra', 'descuento', 'tipoPago', 'creator',
     ];
 
     public function details()

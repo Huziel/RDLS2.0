@@ -24,7 +24,7 @@ class ProductDetailResource extends JsonResource
                 'type' => $this->stock?->typesd,
             ],
             'codigo_barras' => $this->barcode?->code,
-            'imagenes' => ProductImageResource::collection($this->whenLoaded('images')),
+            'imagenes' => $this->whenLoaded('images', fn () => $this->images->pluck('picture')),
             'aditivos' => ProductAddonResource::collection($this->whenLoaded('addons')),
         ];
     }

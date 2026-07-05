@@ -44,6 +44,11 @@ class Store extends Model
         return $this->hasMany(Product::class, 'session', 'createdby');
     }
 
+    public function password()
+    {
+        return $this->hasOne(StorePassword::class, 'idTienda');
+    }
+
     public function scopeByOwner($query, $email)
     {
         return $query->where('createdby', $email);

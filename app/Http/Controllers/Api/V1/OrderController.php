@@ -29,11 +29,18 @@ class OrderController extends Controller
             'direccion' => ['nullable', 'string'],
             'ciudad' => ['nullable', 'string'],
             'codigo_postal' => ['nullable', 'string'],
+            'loyalty_points' => ['nullable', 'integer', 'min:0'],
         ]);
 
         $cartId = $request->header('X-Cart-Token') ?? $request->session()->getId();
+        $loyaltyDiscount = 0;
 
         try {
+            // Redeem loyalty points before checkout
+            if ($request->filled('loyalty_points') && $request->loyalty_points > 0) {
+                $loyaltyDiscount = $this->redeemLoyaltyForCheckout($storeSerial, $request->telefono, $request->loyalty_points);
+            }
+
             $order = app(Checkout::class)(
                 $cartId,
                 $storeSerial,
@@ -42,7 +49,8 @@ class OrderController extends Controller
                 $request->lat,
                 $request->lng,
                 $request->costo_envio,
-                $request->only(['direccion', 'ciudad', 'codigo_postal'])
+                $request->only(['direccion', 'ciudad', 'codigo_postal']),
+                $loyaltyDiscount
             );
 
             // Notify store owner via email
@@ -60,6 +68,7 @@ class OrderController extends Controller
                     'id' => $order->id,
                     'total' => (float) $order->total,
                     'shipping' => (float) $order->totEnvio,
+                    'loyalty_discount' => $loyaltyDiscount,
                 ],
                 'message' => 'Orden creada exitosamente.',
             ], 201);
@@ -76,6 +85,11 @@ class OrderController extends Controller
 
         $orders = PurchaseOrder::with(['cartItems.productData', 'shippingForm', 'shippingOrder.deliver'])
             ->where('serial', $store->serial)
+            ->when($request->search, fn($q) => $q->where(function($q) use ($request) {
+                $q->where('order', 'like', "%{$request->search}%")
+                  ->orWhere('nombre', 'like', "%{$request->search}%")
+                  ->orWhere('tel', 'like', "%{$request->search}%");
+            }))
             ->orderByDesc('id')
             ->paginate($request->get('per_page', 20));
 
@@ -176,6 +190,8 @@ class OrderController extends Controller
                     'nombre' => $order->shippingForm->nombre,
                     'direccion' => $order->shippingForm->direccion,
                     'ciudad' => $order->shippingForm->ciudad,
+                    'codigo_postal' => $order->shippingForm->codigoPostal,
+                    'pais' => $order->shippingForm->pais,
                 ] : null,
                 'extra_charges' => $order->extraCharges->map(fn($e) => [
                     'precio' => (float) $e->precio,
@@ -248,6 +264,17 @@ class OrderController extends Controller
         ]]);
     }
 
+    // Store owner: add extra charge
+    public function addExtraCharge(Request $request, $id)
+    {
+        $user = $request->user();
+        $store = Store::byOwner($user->name)->firstOrFail();
+        $order = PurchaseOrder::where('serial', $store->serial)->findOrFail($id);
+        $request->validate(['precio' => 'required|numeric|min:0', 'tipo' => 'required|string']);
+        \App\Models\ExtraCharge::create(['orderP' => $order->order, 'precio' => $request->precio, 'tipoCargo' => $request->tipo]);
+        return response()->json(['message' => 'Cargo extra agregado.']);
+    }
+
     // Store owner: confirm payment
     public function confirmPayment(Request $request, $id)
     {
@@ -259,6 +286,29 @@ class OrderController extends Controller
         \App\Models\Cart::where('orderC', $order->order)->update(['status' => '3']);
 
         return response()->json(['message' => 'Pago confirmado.', 'data' => ['order' => $order->order, 'status' => '3']]);
+    }
+
+    private function redeemLoyaltyForCheckout($storeSerial, $phone, $pointsToRedeem)
+    {
+        try {
+            $store = Store::where('serial', $storeSerial)->first();
+            if (!$store) return 0;
+            $config = LoyaltyConfig::getConfig($store->id);
+            if (!$config->enabled) return 0;
+
+            $client = Client::where('store_id', $store->id)->where('phone', $phone)->first();
+            if (!$client) return 0;
+
+            $balance = LoyaltyPoint::getBalance($store->id, $client->id);
+            if ($balance < $pointsToRedeem) return 0;
+            if ($pointsToRedeem < $config->minimum_points_to_redeem) return 0;
+
+            $discount = floor($pointsToRedeem / $config->pesos_per_point);
+            LoyaltyPoint::redeemPoints($store->id, $client->id, $pointsToRedeem, 'checkout');
+            return $discount;
+        } catch (\Exception $e) {
+            return 0;
+        }
     }
 
     private function earnLoyaltyPoints($order, $storeSerial, $phone)
