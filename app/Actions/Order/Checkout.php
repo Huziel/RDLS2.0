@@ -9,16 +9,16 @@ use Illuminate\Support\Facades\DB;
 
 class Checkout
 {
-    public function __invoke(string $sessionId, string $storeSerial, string $customerName, string $phone, ?float $lat, ?float $lng, ?float $shippingCost, array $shippingAddress = []): PurchaseOrder
+    public function __invoke(string $sessionId, string $storeSerial, string $customerName, string $phone, ?float $lat, ?float $lng, ?float $shippingCost, array $shippingAddress = [], float $discount = 0): PurchaseOrder
     {
-        return DB::transaction(function () use ($sessionId, $storeSerial, $customerName, $phone, $lat, $lng, $shippingCost, $shippingAddress) {
+        return DB::transaction(function () use ($sessionId, $storeSerial, $customerName, $phone, $lat, $lng, $shippingCost, $shippingAddress, $discount) {
             $cartItems = Cart::active()->byUser($sessionId)->byStore($storeSerial)->get();
 
             if ($cartItems->isEmpty()) {
                 throw new \Exception('El carrito esta vacio.');
             }
 
-            $total = $cartItems->sum('price');
+            $total = max(0, $cartItems->sum('price') - $discount);
             $orderId = 'ORD-' . now()->format('YmdHis') . '-' . rand(100, 999);
             $shippingCost = $shippingCost ?? 0;
 

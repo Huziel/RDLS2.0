@@ -83,38 +83,44 @@ class CrmController extends Controller
             ->get();
 
         $count = 0;
-        $errors = [];
+        $clientIds = [];
 
+        // Create new clients for orders without matching client
         foreach ($orders as $o) {
-            try {
-                $client = Client::findByPhoneOrEmail($store->id, $o->tel, null, $o->nombre);
-                if (! $client) {
-                    $client = Client::create([
-                        'store_id' => $store->id,
-                        'name' => $o->nombre ?: 'Cliente',
-                        'phone' => $o->tel ?: null,
-                        'stage' => 'customer',
-                        'purchase_count' => 1,
-                        'total_spent' => (float) $o->total,
-                        'last_purchase_at' => $o->date,
-                    ]);
-                    $count++;
-                } else {
-                    $client->increment('purchase_count');
-                    $client->increment('total_spent', (float) $o->total);
-                    $client->update(['last_purchase_at' => $o->date]);
-                    $count++;
-                }
-            } catch (\Exception $e) {
-                $errors[] = $e->getMessage();
+            if (!$o->tel) continue;
+            $client = Client::findByPhoneOrEmail($store->id, $o->tel, null, $o->nombre);
+            if (!$client) {
+                $client = Client::create([
+                    'store_id' => $store->id,
+                    'name' => $o->nombre ?: 'Cliente',
+                    'phone' => $o->tel,
+                    'stage' => 'customer',
+                    'purchase_count' => 0,
+                    'total_spent' => 0,
+                    'last_purchase_at' => $o->date,
+                ]);
+                $count++;
+            }
+            if (!in_array($client->id, $clientIds)) {
+                $clientIds[] = $client->id;
             }
         }
 
-        $msg = "$count clientes sincronizados.";
-        if (!empty($errors)) {
-            $msg .= ' Errores: ' . implode('; ', array_slice($errors, 0, 3));
+        // Recalculate totals for all clients from orders
+        foreach ($clientIds as $clientId) {
+            $client = Client::find($clientId);
+            if (!$client) continue;
+            $stats = PurchaseOrder::where('serial', $store->serial)
+                ->where('tel', $client->phone)
+                ->get();
+            $client->update([
+                'purchase_count' => $stats->count(),
+                'total_spent' => $stats->sum('total'),
+                'last_purchase_at' => $stats->max('date'),
+            ]);
         }
 
+        $msg = "$count clientes nuevos. " . count($clientIds) . " clientes actualizados.";
         return response()->json(['message' => $msg]);
     }
 }

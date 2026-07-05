@@ -19,6 +19,7 @@ use App\Http\Controllers\Api\V1\CustomizerController;
 use App\Http\Controllers\Api\V1\AdGeneratorController;
 use App\Http\Controllers\Api\V1\AdminController;
 use App\Http\Controllers\Api\V1\DashboardController;
+use App\Http\Controllers\Api\V1\LayawayController;
 use App\Http\Controllers\Api\V1\LoyaltyController;
 use App\Http\Controllers\Api\V1\MarketplaceController;
 use App\Http\Controllers\Api\V1\QrController;
@@ -122,6 +123,8 @@ Route::prefix('v1')->group(function () {
         Route::delete('pos/orders/{order}', [PosController::class, 'deleteOrder']);
         Route::get('pos/history', [PosController::class, 'history']);
         Route::get('pos/ticket/{noOrder}', [PosController::class, 'ticket']);
+        Route::post('pos/loyalty/check', [PosController::class, 'loyaltyCheck']);
+        Route::post('pos/loyalty/redeem', [PosController::class, 'loyaltyRedeem']);
 
         // Delivery - Store owner side
         Route::post('orders/{order}/emit-shipping', [DeliveryController::class, 'emitOrder']);
@@ -197,6 +200,12 @@ Route::prefix('v1')->group(function () {
         Route::post('loyalty/adjust', [LoyaltyController::class, 'adjustPoints']);
         Route::get('loyalty/transactions', [LoyaltyController::class, 'transactions']);
 
+        // Layaway / Apartados
+        Route::get('layaways', [LayawayController::class, 'index']);
+        Route::post('layaways', [LayawayController::class, 'store']);
+        Route::put('layaways/{id}', [LayawayController::class, 'update']);
+        Route::delete('layaways/{id}', [LayawayController::class, 'destroy']);
+
         // Chat (store owner)
         Route::get('chat/conversations', [ChatController::class, 'storeConversations']);
         Route::get('chat/conversations/{id}/messages', [ChatController::class, 'storeMessages']);
@@ -250,6 +259,7 @@ Route::prefix('v1')->group(function () {
         Route::get('orders', [OrderController::class, 'index']);
         Route::get('orders/{id}', [OrderController::class, 'show']);
         Route::put('orders/{id}/confirm-payment', [OrderController::class, 'confirmPayment']);
+        Route::post('orders/{id}/extra-charge', [OrderController::class, 'addExtraCharge']);
 
         // Orders (customer)
         Route::get('my-orders', [OrderController::class, 'myOrders']);

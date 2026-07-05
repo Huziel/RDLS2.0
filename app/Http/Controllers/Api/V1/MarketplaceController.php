@@ -16,7 +16,9 @@ class MarketplaceController extends Controller
         $query = Product::with(['store', 'images'])
             ->where('active', 1)
             ->whereHas('store', fn($q) => $q->where('category', '!=', '10'))
-            ->whereHas('store.extra', fn($q) => $q->whereNotNull('nombreTienda')->where('nombreTienda', '!=', ''));
+            ->whereHas('store.extra', fn($q) => $q->whereNotNull('nombreTienda')->where('nombreTienda', '!=', ''))
+            // Exclude products from stores with catalog password
+            ->whereDoesntHave('store', fn($q) => $q->whereHas('password'));
 
         if ($request->has('search')) {
             $s = '%' . $request->search . '%';
@@ -80,7 +82,8 @@ class MarketplaceController extends Controller
     {
         $query = Store::with('extra')
             ->where('category', '!=', '10')
-            ->whereHas('extra', fn($q) => $q->whereNotNull('nombreTienda')->where('nombreTienda', '!=', ''));
+            ->whereHas('extra', fn($q) => $q->whereNotNull('nombreTienda')->where('nombreTienda', '!=', ''))
+            ->whereDoesntHave('password');
         if ($request->has('search')) {
             $s = '%' . $request->search . '%';
             $query->whereHas('extra', fn($q) => $q->where('nombreTienda', 'like', $s));
