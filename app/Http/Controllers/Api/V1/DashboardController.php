@@ -55,8 +55,11 @@ class DashboardController extends Controller
         // Recent activity
         $recentOnline = PurchaseOrder::where('serial', $store->serial)
             ->orderByDesc('id')->limit(5)->get(['id', 'order', 'nombre', 'total', 'date']);
-        $recentPos = PosOrderHistory::where('creator', $store->createdby)
-            ->orderByDesc('id')->limit(5)->get(['id', 'noOrder as order', 'nombre', 'total', 'fecha as date']);
+        $canViewPosHistory = $user->hasRole('super-admin') || $user->can('pos.history');
+        $recentPos = $canViewPosHistory
+            ? PosOrderHistory::where('creator', $store->createdby)
+                ->orderByDesc('id')->limit(5)->get(['id', 'noOrder as order', 'nombre', 'total', 'fecha as date'])
+            : collect();
 
         return response()->json(['data' => [
             'products' => $productCount,

@@ -3,6 +3,7 @@ import { api } from './client.js'
 export const productsApi = {
   list: (params = {}) => api.get('/products', { params }),
   categories: () => api.get('/categories'),
+  searchBarcode: (code) => api.get('/products/search-barcode', { params: { code } }),
   get: (id) => api.get(`/products/${id}`),
   create: (payload) => api.post('/products', payload),
   update: (id, payload) => api.put(`/products/${id}`, payload),

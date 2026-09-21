@@ -11,9 +11,12 @@ use App\Models\PosOrderDetail;
 use App\Models\PosOrderDetailHistory;
 use App\Models\PosOrderHistory;
 use App\Models\Product;
+use App\Models\ProductStock;
 use App\Models\Store;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class PosController extends Controller
 {
@@ -40,18 +43,28 @@ class PosController extends Controller
             'telefono' => ['nullable', 'string'],
         ]);
 
-        $order = PosOrder::create([
-            'noOrder' => now()->format('YmdHis') . rand(100, 999),
-            'nombre' => $request->nombre,
-            'telefono' => $request->telefono,
-            'fecha' => now()->format('Y-m-d H:i:s'),
-            'estado' => 0,
-            'total' => 0,
-            'extra' => 0,
-            'descuento' => 0,
-            'tipoPago' => 0,
-            'creator' => $store->createdby,
-        ]);
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            try {
+                $order = PosOrder::create([
+                    'noOrder' => now()->format('YmdHisv').random_int(100, 999),
+                    'nombre' => $request->nombre,
+                    'telefono' => $request->telefono,
+                    'fecha' => now()->format('Y-m-d H:i:s'),
+                    'estado' => 0,
+                    'total' => 0,
+                    'extra' => 0,
+                    'descuento' => 0,
+                    'tipoPago' => 0,
+                    'creator' => $store->createdby,
+                ]);
+                break;
+            } catch (QueryException $exception) {
+                $isDuplicate = in_array((int) ($exception->errorInfo[1] ?? 0), [19, 1062], true);
+                if (! $isDuplicate || $attempt === 3) {
+                    throw $exception;
+                }
+            }
+        }
 
         return response()->json([
             'data' => $order->load('details'),
@@ -64,25 +77,29 @@ class PosController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        $order = PosOrder::where('creator', $store->createdby)
-            ->where('estado', '0')
-            ->findOrFail($orderId);
-
-        $request->validate([
+        $validated = $request->validate([
             'producto_id' => ['required', 'integer'],
             'cantidad' => ['required', 'integer', 'min:1'],
         ]);
 
-        $product = Product::findOrFail($request->producto_id);
+        $detail = DB::transaction(function () use ($orderId, $store, $validated) {
+            $order = PosOrder::where('creator', $store->createdby)
+                ->where('estado', 0)
+                ->lockForUpdate()
+                ->findOrFail($orderId);
+            $product = Product::byStore($store->createdby)
+                ->active()
+                ->findOrFail($validated['producto_id']);
 
-        $detail = PosOrderDetail::create([
-            'idPventaGeneral' => $order->id,
-            'productoId' => $product->id,
-            'cantidad' => $request->cantidad,
-            'nameProd' => $product->keyy,
-            'precioBruto' => $product->number,
-            'precioNeto' => $product->number * $request->cantidad,
-        ]);
+            return PosOrderDetail::create([
+                'idPventaGeneral' => $order->id,
+                'productoId' => $product->id,
+                'cantidad' => $validated['cantidad'],
+                'nameProd' => $product->keyy,
+                'precioBruto' => $product->number,
+                'precioNeto' => $product->number * $validated['cantidad'],
+            ]);
+        });
 
         return response()->json([
             'data' => $detail,
@@ -95,15 +112,21 @@ class PosController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        PosOrder::where('creator', $store->createdby)->where('estado', '0')->findOrFail($orderId);
+        $validated = $request->validate(['cantidad' => ['required', 'integer', 'min:1']]);
 
-        $request->validate(['cantidad' => ['required', 'integer', 'min:1']]);
+        $detail = DB::transaction(function () use ($orderId, $detailId, $store, $validated) {
+            PosOrder::where('creator', $store->createdby)
+                ->where('estado', 0)
+                ->lockForUpdate()
+                ->findOrFail($orderId);
+            $detail = PosOrderDetail::where('idPventaGeneral', $orderId)->findOrFail($detailId);
+            $detail->update([
+                'cantidad' => $validated['cantidad'],
+                'precioNeto' => $detail->precioBruto * $validated['cantidad'],
+            ]);
 
-        $detail = PosOrderDetail::where('idPventaGeneral', $orderId)->findOrFail($detailId);
-        $detail->update([
-            'cantidad' => $request->cantidad,
-            'precioNeto' => $detail->precioBruto * $request->cantidad,
-        ]);
+            return $detail;
+        });
 
         return response()->json(['data' => $detail, 'message' => 'Actualizado.']);
     }
@@ -113,8 +136,13 @@ class PosController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        PosOrder::where('creator', $store->createdby)->where('estado', '0')->findOrFail($orderId);
-        PosOrderDetail::where('idPventaGeneral', $orderId)->where('id', $detailId)->delete();
+        DB::transaction(function () use ($orderId, $detailId, $store) {
+            PosOrder::where('creator', $store->createdby)
+                ->where('estado', 0)
+                ->lockForUpdate()
+                ->findOrFail($orderId);
+            PosOrderDetail::where('idPventaGeneral', $orderId)->where('id', $detailId)->delete();
+        });
 
         return response()->json(['message' => 'Producto eliminado.']);
     }
@@ -124,9 +152,14 @@ class PosController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        PosOrder::where('creator', $store->createdby)->where('estado', '0')->findOrFail($orderId);
-        PosOrderDetail::where('idPventaGeneral', $orderId)->delete();
-        PosOrder::where('id', $orderId)->delete();
+        DB::transaction(function () use ($orderId, $store) {
+            PosOrder::where('creator', $store->createdby)
+                ->where('estado', 0)
+                ->lockForUpdate()
+                ->findOrFail($orderId);
+            PosOrderDetail::where('idPventaGeneral', $orderId)->delete();
+            PosOrder::where('id', $orderId)->where('estado', 0)->delete();
+        });
 
         return response()->json(['message' => 'Orden eliminada.']);
     }
@@ -136,20 +169,33 @@ class PosController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        $order = PosOrder::where('creator', $store->createdby)
-            ->where('estado', '0')
-            ->with('details')
-            ->findOrFail($orderId);
-
-        $total = $order->details->sum('precioNeto');
-        $extra = $request->input('extra', 0);
-
-        $order->update([
-            'fecha' => now()->format('Y-m-d H:i:s'),
-            'estado' => 1,
-            'total' => $total + $extra,
-            'extra' => $extra,
+        $validated = $request->validate([
+            'extra' => ['nullable', 'numeric', 'min:0'],
         ]);
+
+        $order = DB::transaction(function () use ($orderId, $store, $validated) {
+            $order = PosOrder::where('creator', $store->createdby)
+                ->where('estado', 0)
+                ->lockForUpdate()
+                ->findOrFail($orderId);
+            $details = PosOrderDetail::where('idPventaGeneral', $order->id)->get();
+
+            if ($details->isEmpty()) {
+                throw ValidationException::withMessages([
+                    'order' => ['Agrega al menos un producto.'],
+                ]);
+            }
+
+            $extra = $validated['extra'] ?? 0;
+            $order->update([
+                'fecha' => now()->format('Y-m-d H:i:s'),
+                'estado' => 1,
+                'total' => $details->sum('precioNeto') + $extra,
+                'extra' => $extra,
+            ]);
+
+            return $order;
+        });
 
         return response()->json([
             'data' => $order->fresh('details'),
@@ -162,19 +208,55 @@ class PosController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        $order = PosOrder::where('creator', $store->createdby)
-            ->where('estado', '1')
-            ->with('details')
-            ->findOrFail($orderId);
-
-        $request->validate([
+        $validated = $request->validate([
             'tipo_pago' => ['required', 'string', 'in:efectivo,tarjeta,transferencia'],
         ]);
 
         $paymentTypeMap = ['efectivo' => 1, 'tarjeta' => 2, 'transferencia' => 3];
 
-        DB::transaction(function () use ($order, $request, $store, $paymentTypeMap) {
-            // Move to history
+        $order = DB::transaction(function () use ($orderId, $validated, $store, $paymentTypeMap) {
+            $order = PosOrder::where('creator', $store->createdby)
+                ->where('estado', 1)
+                ->lockForUpdate()
+                ->findOrFail($orderId);
+            $details = PosOrderDetail::where('idPventaGeneral', $order->id)->get();
+
+            if ($details->isEmpty()) {
+                throw ValidationException::withMessages([
+                    'order' => ['La orden no contiene productos.'],
+                ]);
+            }
+
+            $quantities = $details->groupBy('productoId')
+                ->map(fn ($items) => (float) $items->sum('cantidad'));
+            $products = Product::byStore($store->createdby)
+                ->active()
+                ->whereIn('id', $quantities->keys())
+                ->get()
+                ->keyBy('id');
+
+            if ($products->count() !== $quantities->count()) {
+                throw ValidationException::withMessages([
+                    'stock' => ['La orden contiene productos inactivos o ajenos a la tienda.'],
+                ]);
+            }
+
+            $stocks = ProductStock::whereIn('idProd', $quantities->keys())
+                ->orderBy('idProd')
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('idProd');
+
+            foreach ($quantities as $productId => $quantity) {
+                $stock = $stocks->get($productId);
+                if (! $stock || (float) $stock->stock < $quantity) {
+                    $productName = $products->get($productId)?->keyy ?? "#{$productId}";
+                    throw ValidationException::withMessages([
+                        'stock' => ["Stock insuficiente para {$productName}."],
+                    ]);
+                }
+            }
+
             $history = PosOrderHistory::create([
                 'noOrder' => $order->noOrder,
                 'nombre' => $order->nombre,
@@ -184,11 +266,11 @@ class PosController extends Controller
                 'total' => $order->total,
                 'extra' => $order->extra,
                 'descuento' => $order->descuento,
-                'tipoPago' => $paymentTypeMap[$request->tipo_pago],
+                'tipoPago' => $paymentTypeMap[$validated['tipo_pago']],
                 'creator' => $store->createdby,
             ]);
 
-            foreach ($order->details as $detail) {
+            foreach ($details as $detail) {
                 PosOrderDetailHistory::create([
                     'idPventaGeneral' => $history->id,
                     'productoId' => $detail->productoId,
@@ -198,15 +280,16 @@ class PosController extends Controller
                     'precioNeto' => $detail->precioNeto,
                 ]);
 
-                // Deduct stock
-                $stock = \App\Models\ProductStock::where('idProd', $detail->productoId)->first();
-                if ($stock) {
-                    $stock->decrement('stock', $detail->cantidad);
-                }
             }
 
-            // Mark order as paid
-            $order->update(['estado' => 2, 'tipoPago' => $paymentTypeMap[$request->tipo_pago]]);
+            foreach ($quantities as $productId => $quantity) {
+                $stock = $stocks->get($productId);
+                $stock->update(['stock' => (float) $stock->stock - $quantity]);
+            }
+
+            $order->update(['estado' => 2, 'tipoPago' => $paymentTypeMap[$validated['tipo_pago']]]);
+
+            return $order;
         });
 
         // Earn loyalty points
@@ -249,12 +332,13 @@ class PosController extends Controller
         $request->validate(['telefono' => 'required|string']);
 
         $client = Client::where('store_id', $store->id)->where('phone', $request->telefono)->first();
-        if (!$client) {
+        if (! $client) {
             return response()->json(['data' => ['points' => 0, 'registered' => false]]);
         }
 
         $points = LoyaltyPoint::getBalance($store->id, $client->id);
         $config = LoyaltyConfig::getConfig($store->id);
+
         return response()->json(['data' => [
             'points' => $points,
             'registered' => true,
@@ -279,7 +363,7 @@ class PosController extends Controller
         ]);
 
         $config = LoyaltyConfig::getConfig($store->id);
-        if (!$config->enabled) {
+        if (! $config->enabled) {
             return response()->json(['message' => 'Programa de lealtad no disponible.'], 422);
         }
 
@@ -304,17 +388,24 @@ class PosController extends Controller
     private function earnPosLoyaltyPoints($order, $store)
     {
         try {
-            if (!$order->telefono) return;
+            if (! $order->telefono) {
+                return;
+            }
             $config = LoyaltyConfig::getConfig($store->id);
-            if (!$config->enabled) return;
+            if (! $config->enabled) {
+                return;
+            }
 
             $client = Client::where('store_id', $store->id)->where('phone', $order->telefono)->first();
-            if (!$client) return;
+            if (! $client) {
+                return;
+            }
 
             $points = (int) floor($order->total * $config->points_per_peso);
             if ($points > 0) {
                 LoyaltyPoint::addPoints($store->id, $client->id, $points, 'earn', "Venta POS {$order->noOrder}", $order->noOrder);
             }
-        } catch (\Exception $e) {}
+        } catch (\Exception $e) {
+        }
     }
 }

@@ -5,7 +5,7 @@ const user = {
   name: 'tienda@example.com',
   type: '1',
   roles: ['store-owner'],
-  permissions: ['dashboard.view'],
+  permissions: ['dashboard.view', 'pos.history'],
 }
 
 test.beforeEach(async ({ page }) => {
@@ -25,6 +25,7 @@ test.beforeEach(async ({ page }) => {
       data: {
         products: 8,
         active_products: 6,
+        low_stock: 2,
         online_orders: 4,
         online_revenue: 900,
         pos_orders: 3,
@@ -46,6 +47,8 @@ test('renders real dashboard contracts and subscription name', async ({ page }) 
   await expect(page.getByText('Tienda Demo')).toBeVisible()
   await expect(page.getByText('Profesional')).toBeVisible()
   await expect(page.getByText('6', { exact: true })).toBeVisible()
+  await expect(page.getByText('Stock bajo')).toBeVisible()
+  await expect(page.getByText('2', { exact: true })).toBeVisible()
 })
 
 test('dashboard fits a mobile viewport', async ({ page }) => {
@@ -54,4 +57,34 @@ test('dashboard fits a mobile viewport', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Abrir menú' })).toBeVisible()
   const sizes = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: window.innerWidth }))
   expect(sizes.width).toBeLessThanOrEqual(sizes.viewport)
+})
+
+test('hides and rejects POS access without pos.use', async ({ page }) => {
+  await page.goto('/dashboard')
+  const menuButton = page.getByRole('button', { name: 'Abrir menú' })
+  if (await menuButton.isVisible()) await menuButton.click()
+  await expect(page.getByRole('link', { name: 'Punto de venta' })).toHaveCount(0)
+
+  await page.goto('/dashboard/pos')
+  await expect(page).toHaveURL(/\/dashboard$/)
+})
+
+test('allows POS use but hides history without pos.history', async ({ page }) => {
+  const operator = { ...user, permissions: ['dashboard.view', 'pos.use'] }
+  await page.addInitScript((sessionUser) => {
+    localStorage.setItem('token', 'pos-operator-token')
+    localStorage.setItem('user', JSON.stringify(sessionUser))
+    localStorage.setItem('onboarding_done', 'true')
+  }, operator)
+  await page.unroute('**/api/v1/user')
+  await page.route('**/api/v1/user', (route) => route.fulfill({ json: { data: operator } }))
+
+  await page.goto('/dashboard')
+  const menuButton = page.getByRole('button', { name: 'Abrir menú' })
+  if (await menuButton.isVisible()) await menuButton.click()
+  await expect(page.getByRole('link', { name: 'Punto de venta' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Actividad POS' })).toHaveCount(0)
+
+  await page.goto('/dashboard/pos/history')
+  await expect(page).toHaveURL(/\/dashboard$/)
 })

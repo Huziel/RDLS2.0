@@ -50,8 +50,8 @@
 .product-empty strong { color: #344054; font-size: 1.05rem; }
 .product-empty p { margin: 0 0 .75rem; }
 
-.product-results { overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: #fff; box-shadow: 0 8px 24px rgb(28 39 68 / 5%); }
-.product-table { width: 100%; border-collapse: collapse; }
+.product-results { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; background: #fff; box-shadow: 0 8px 24px rgb(28 39 68 / 5%); }
+.product-table { width: 100%; min-width: 780px; border-collapse: collapse; }
 .product-table th { padding: .75rem 1rem; color: #667085; background: #f8fafc; text-align: left; text-transform: uppercase; font-size: .7rem; letter-spacing: .06em; }
 .product-table td { border-top: 1px solid #edf0f5; padding: .75rem 1rem; font-size: .875rem; vertical-align: middle; }
 .product-thumb { display: block; width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: #f2f4f7; }

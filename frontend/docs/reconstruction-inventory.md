@@ -25,18 +25,21 @@ El listado completo se conserva en `src/router/index.js`; los módulos todavía 
 
 - FASE 1: infraestructura, autenticación, layouts y dashboard completados.
 - FASE 2: Productos completado en listado, alta, edición, eliminación, imágenes, categorías y extras.
+- FASE 3: inventario/stock/categorías auditados y estabilizados en código; no existía módulo independiente de Inventario y el despliegue a producción sigue pendiente.
 - Evidencia y contrato de Productos: `docs/products-reconstruction.md`.
+- Evidencia y contrato de stock/POS: `docs/inventory-reconstruction.md`.
 
 ## Orden recomendado
 
 1. Autenticación y dashboard base.
 2. Productos, carga de imágenes y categorías. Completado.
-3. POS e historial. Recomendado para FASE 3.
-4. Pedidos y cargos adicionales.
-5. Tienda pública, carrito y checkout.
-6. Configuración, constructor y onboarding.
-7. CRM, agenda, delivery, lealtad y chat.
-8. Analíticas, administración e integraciones.
+3. Inventario, stock y categorías. Código completado sin inventar un módulo inexistente; migraciones pendientes de despliegue.
+4. POS e historial. Recomendado para FASE 4.
+5. Pedidos y cargos adicionales.
+6. Tienda pública, carrito y checkout.
+7. Configuración, constructor y onboarding.
+8. CRM, agenda, delivery, lealtad y chat.
+9. Analíticas, administración e integraciones.
 
 ## Riesgos detectados en backend
 
@@ -44,7 +47,7 @@ El listado completo se conserva en `src/router/index.js`; los módulos todavía 
 - Varios endpoints protegidos no aplican middleware de rol o permiso.
 - El detalle de pedidos no siempre valida pertenencia a la tienda.
 - El detalle público de pedidos no valida el `cart_token`.
-- El POS acepta identificadores de productos sin validar siempre su tienda; el carrito ya restringe producto y extras activos a la tienda solicitada, pero no reserva stock.
+- POS ya restringe producto y pago a la tienda autenticada y evita stock negativo; el carrito restringe producto/extras activos, pero online todavía no reserva ni descuenta stock.
 - La respuesta administrativa de ajustes incluye la contraseña SMTP.
 - Productos alimenta POS, catálogo público, cupones, QR y apartados; varios de esos consumidores no validan tenant o stock en backend.
 
@@ -59,3 +62,7 @@ Estos problemas deben corregirse en backend; ocultar botones en Vue no constituy
 - Productos normaliza sus dos formas de stock, aplica el límite del plan de forma transaccional, conecta permisos frontend/backend y evita exponer `store_session` públicamente.
 - Una migración asigna el rol `store-owner` a propietarios legacy sin rol para evitar bloqueos al activar permisos.
 - Todos los flujos de emisión de token caducan a las 12 horas, excepto “Recordarme” que conserva 30 días.
+- Stock sigue siendo un saldo absoluto por Producto; no existen movimientos ni almacenes reales.
+- Pago POS bloquea orden/saldos, valida disponibilidad y descuenta dentro de una sola transacción.
+- POS aplica los permisos existentes `pos.use` y `pos.history`; no se inventaron permisos de Inventario.
+- Categorías siguen siendo strings distinct por tienda, sin entidad o CRUD artificial.

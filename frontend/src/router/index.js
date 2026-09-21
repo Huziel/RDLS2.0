@@ -5,14 +5,14 @@ import { createAuthGuard } from './guards.js'
 const moduleView = () => import('../views/ModulePendingView.vue')
 
 const dashboardChildren = [
-  { path: '', name: 'dashboard', component: () => import('../views/dashboard/DashboardHomeView.vue') },
+  { path: '', name: 'dashboard', component: () => import('../views/dashboard/DashboardHomeView.vue'), meta: { permission: 'dashboard.view' } },
   { path: 'products', name: 'products', component: () => import('../views/products/ProductListView.vue'), meta: { title: 'Productos', permission: 'products.read' } },
   { path: 'products/create', name: 'product-create', component: () => import('../views/products/ProductCreateView.vue'), meta: { title: 'Nuevo producto', permission: 'products.create' } },
   { path: 'products/:id/edit', name: 'product-edit', component: () => import('../views/products/ProductEditView.vue'), meta: { title: 'Editar producto', permissions: ['products.read', 'products.update'] } },
   { path: 'orders', name: 'orders', component: moduleView, meta: { title: 'Pedidos' } },
   { path: 'coupons', name: 'coupons', component: moduleView, meta: { title: 'Cupones' } },
-  { path: 'pos', name: 'pos', component: moduleView, meta: { title: 'Punto de venta' } },
-  { path: 'pos/history', name: 'pos-history', component: moduleView, meta: { title: 'Historial POS' } },
+  { path: 'pos', name: 'pos', component: moduleView, meta: { title: 'Punto de venta', permission: 'pos.use' } },
+  { path: 'pos/history', name: 'pos-history', component: moduleView, meta: { title: 'Historial POS', permission: 'pos.history' } },
   { path: 'appointments', name: 'appointments', component: moduleView, meta: { title: 'Agenda' } },
   { path: 'barters', name: 'barters', component: moduleView, meta: { title: 'Trueques' } },
   { path: 'crm', name: 'crm', component: moduleView, meta: { title: 'CRM' } },

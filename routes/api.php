@@ -122,18 +122,22 @@ Route::prefix('v1')->group(function () {
             ->middleware('role_or_permission:super-admin|products.update');
 
         // POS
-        Route::get('pos/orders', [PosController::class, 'activeOrders']);
-        Route::post('pos/orders', [PosController::class, 'createOrder']);
-        Route::post('pos/orders/{order}/products', [PosController::class, 'addProduct']);
-        Route::put('pos/orders/{order}/products/{detail}', [PosController::class, 'updateProduct']);
-        Route::delete('pos/orders/{order}/products/{detail}', [PosController::class, 'removeProduct']);
-        Route::post('pos/orders/{order}/save', [PosController::class, 'saveOrder']);
-        Route::post('pos/orders/{order}/pay', [PosController::class, 'payOrder']);
-        Route::delete('pos/orders/{order}', [PosController::class, 'deleteOrder']);
-        Route::get('pos/history', [PosController::class, 'history']);
-        Route::get('pos/ticket/{noOrder}', [PosController::class, 'ticket']);
-        Route::post('pos/loyalty/check', [PosController::class, 'loyaltyCheck']);
-        Route::post('pos/loyalty/redeem', [PosController::class, 'loyaltyRedeem']);
+        Route::middleware('role_or_permission:super-admin|pos.use')->group(function () {
+            Route::get('pos/orders', [PosController::class, 'activeOrders']);
+            Route::post('pos/orders', [PosController::class, 'createOrder']);
+            Route::post('pos/orders/{order}/products', [PosController::class, 'addProduct']);
+            Route::put('pos/orders/{order}/products/{detail}', [PosController::class, 'updateProduct']);
+            Route::delete('pos/orders/{order}/products/{detail}', [PosController::class, 'removeProduct']);
+            Route::post('pos/orders/{order}/save', [PosController::class, 'saveOrder']);
+            Route::post('pos/orders/{order}/pay', [PosController::class, 'payOrder']);
+            Route::delete('pos/orders/{order}', [PosController::class, 'deleteOrder']);
+            Route::post('pos/loyalty/check', [PosController::class, 'loyaltyCheck']);
+            Route::post('pos/loyalty/redeem', [PosController::class, 'loyaltyRedeem']);
+        });
+        Route::middleware('role_or_permission:super-admin|pos.history')->group(function () {
+            Route::get('pos/history', [PosController::class, 'history']);
+            Route::get('pos/ticket/{noOrder}', [PosController::class, 'ticket']);
+        });
 
         // Delivery - Store owner side
         Route::post('orders/{order}/emit-shipping', [DeliveryController::class, 'emitOrder']);
@@ -249,7 +253,8 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('admin/custom-pages', CustomPageController::class)->except(['show']);
 
         // Dashboard & Analytics
-        Route::get('dashboard/stats', [DashboardController::class, 'stats']);
+        Route::get('dashboard/stats', [DashboardController::class, 'stats'])
+            ->middleware('role_or_permission:super-admin|dashboard.view');
         Route::get('analytics/overview', [AnalyticsController::class, 'overview']);
         Route::get('analytics/sales-by-day', [AnalyticsController::class, 'salesByDay']);
         Route::get('analytics/top-products', [AnalyticsController::class, 'topProducts']);

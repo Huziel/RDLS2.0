@@ -135,6 +135,7 @@ test('lists, searches, filters and paginates products', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Productos' })).toBeVisible()
   const visibleResults = page.locator('.product-table:visible, .product-card-list:visible')
   await expect(visibleResults.getByText('Café clásico')).toBeVisible()
+  await expect(visibleResults.getByText(/^(?:Stock: )?8$/)).toBeVisible()
 
   await page.getByPlaceholder('Buscar producto...').fill('reserva')
   await expect(visibleResults.getByText('Café reserva')).toBeVisible()
@@ -251,7 +252,17 @@ test('uses product cards without horizontal overflow on mobile', async ({ page }
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/dashboard/products')
   await expect(page.locator('.product-card').first()).toBeVisible()
+  await expect(page.locator('.product-card').first()).toContainText('Stock: 8')
   await expect(page.locator('.product-table')).toBeHidden()
+  const sizes = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: window.innerWidth }))
+  expect(sizes.width).toBeLessThanOrEqual(sizes.viewport)
+})
+
+test('keeps the desktop table contained near the responsive breakpoint', async ({ page }) => {
+  await mockProducts(page)
+  await page.setViewportSize({ width: 800, height: 900 })
+  await page.goto('/dashboard/products')
+  await expect(page.locator('.product-table')).toBeVisible()
   const sizes = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: window.innerWidth }))
   expect(sizes.width).toBeLessThanOrEqual(sizes.viewport)
 })
@@ -282,6 +293,7 @@ test('rejects non-store user access through the existing role guard', async ({ p
 
 test('rejects product creation without products.create permission', async ({ page }) => {
   const readOnlyUser = { ...storeUser, permissions: ['products.read'] }
+  await mockProducts(page)
   await page.addInitScript((user) => {
     localStorage.setItem('token', 'read-only-token')
     localStorage.setItem('user', JSON.stringify(user))
@@ -290,6 +302,6 @@ test('rejects product creation without products.create permission', async ({ pag
   await page.unroute('**/api/v1/user')
   await page.route('**/api/v1/user', (route) => route.fulfill({ json: { data: readOnlyUser } }))
   await page.goto('/dashboard/products/create')
-  await expect(page).toHaveURL(/\/dashboard$/)
-  await expect(page.getByRole('heading', { name: 'Panel de control' })).toBeVisible()
+  await expect(page).toHaveURL(/\/dashboard\/products$/)
+  await expect(page.getByRole('heading', { name: 'Productos' })).toBeVisible()
 })

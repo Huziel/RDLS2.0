@@ -5,6 +5,7 @@
 /frontend/coverage
 /frontend/playwright-report
 /frontend/test-results
+/*.sql
 /public/build
 /public/hot
 /public/storage

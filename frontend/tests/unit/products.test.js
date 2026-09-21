@@ -14,6 +14,7 @@ describe('product contract adapters', () => {
   it('normalizes list and detail stock shapes', () => {
     expect(normalizeProduct({ id: '2', precio: '19.50', stock: '4', activo: 1 }).stock).toBe(4)
     expect(normalizeProduct({ id: 2, precio: 19.5, stock: { cantidad: 7 }, activo: 0 }).stock).toBe(7)
+    expect(normalizeProduct({ id: 2, stock: null }).stock).toBe(0)
   })
 
   it('maps a product detail to editable fields', () => {

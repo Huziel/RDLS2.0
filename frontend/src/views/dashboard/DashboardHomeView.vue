@@ -11,6 +11,9 @@ const stats = ref({})
 
 const cards = computed(() => [
   { label: 'Productos activos', value: stats.value.active_products ?? 0, detail: `${stats.value.products ?? 0} registrados`, tone: 'indigo' },
+  ...(Number(stats.value.low_stock || 0) > 0
+    ? [{ label: 'Stock bajo', value: stats.value.low_stock, detail: 'Saldo mayor que 0 y menor que 5', tone: 'rose' }]
+    : []),
   { label: 'Ventas en línea', value: money(stats.value.online_revenue), detail: `${stats.value.online_orders ?? 0} pedidos`, tone: 'emerald' },
   { label: 'Ventas POS', value: money(stats.value.pos_revenue), detail: `${stats.value.pos_orders ?? 0} ventas`, tone: 'amber' },
   { label: 'Ingreso de hoy', value: money(stats.value.today_revenue), detail: `${stats.value.today_appointments ?? 0} citas`, tone: 'rose' },
@@ -64,8 +67,8 @@ onMounted(async () => {
           </ul>
         </article>
 
-        <article class="panel">
-          <div class="panel-heading"><h2>Actividad POS</h2><RouterLink to="/dashboard/pos/history">Historial</RouterLink></div>
+        <article v-if="auth.hasRole('super-admin') || auth.can('pos.history')" class="panel">
+          <div class="panel-heading"><h2>Actividad POS</h2><RouterLink v-if="auth.hasRole('super-admin') || auth.can('pos.history')" to="/dashboard/pos/history">Historial</RouterLink></div>
           <div v-if="!stats.recent_pos?.length" class="empty-state">Todavía no hay ventas en punto de venta.</div>
           <ul v-else class="activity-list">
             <li v-for="order in stats.recent_pos" :key="order.id">

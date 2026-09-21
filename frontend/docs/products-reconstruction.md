@@ -6,7 +6,7 @@ Documento técnico de FASE 2. La clasificación utilizada es:
 - `INFERIDO`: conclusión consistente con varias evidencias, pero sin contrato explícito o datos reales suficientes.
 - `NO CONFIRMADO`: concepto buscado sin evidencia suficiente para implementarlo.
 
-No se ejecutaron operaciones de escritura contra la base remota. El frontend compilado de `public/` no fue modificado.
+Durante la auditoría original de FASE 2 no se ejecutaron operaciones de escritura contra la base remota. El incidente operativo posterior de FASE 3 y su restauración están documentados en `inventory-reconstruction.md`. El frontend compilado de `public/` no fue modificado.
 
 ## 1. Evidencia encontrada
 
@@ -225,6 +225,7 @@ Todos usan `auth:sanctum` y la tienda se resuelve mediante el nombre del usuario
 - `CONFIRMADO`: precios pueden llegar como strings.
 - `CONFIRMADO`: el frontend reconstruido normaliza estas formas sin cambiar el payload Laravel.
 - `CONFIRMADO`: `store_session` fue retirado de `ProductResource` para no exponer públicamente el identificador del propietario.
+- `RECONSTRUIDO FASE 3`: la tabla desktop y las cards móviles muestran nuevamente el stock confirmado en el bundle original.
 
 ## 7. Upload de imágenes
 
@@ -263,7 +264,7 @@ Todos usan `auth:sanctum` y la tienda se resuelve mediante el nombre del usuario
 - Categoría y estado como filtros.
 - 20 registros por página.
 - Thumbnail o texto “Sin imagen”.
-- Precio, categoría, estado y acciones Editar/Eliminar.
+- Precio, categoría, stock, estado y acciones Editar/Eliminar.
 - Confirmación `¿Eliminar "nombre"?`.
 - No existía detalle privado independiente.
 - El original no presentaba correctamente errores de listado.
@@ -297,6 +298,9 @@ Todos usan `auth:sanctum` y la tienda se resuelve mediante el nombre del usuario
 - La edición puede limpiar imagen, descripción, variable y categoría mediante `null`.
 - La edición elimina la fila barcode cuando `codigo_barras` se limpia.
 - La búsqueda por barcode se resuelve dentro de la tienda autenticada.
+- La edición de producto, stock, barcode e imágenes se ejecuta dentro de una transacción con locks por tienda/producto.
+- Barcode puede repetirse entre tiendas, pero no entre dos productos de la misma tienda.
+- La búsqueda por barcode solo devuelve productos activos e incluye su saldo actual.
 - Los errores internos se registran en Laravel y ya no se envían al cliente.
 
 ## 12. Dependencias
@@ -306,7 +310,8 @@ Todos usan `auth:sanctum` y la tienda se resuelve mediante el nombre del usuario
 - `CONFIRMADO`: POS consulta productos, categorías y barcode.
 - `CONFIRMADO`: copia nombre y precios en `pventageneraldetalle`.
 - `CONFIRMADO`: descuenta stock al pagar.
-- `RIESGO`: agregar productos al POS no valida tienda, actividad ni disponibilidad; el stock puede quedar negativo.
+- `RECONSTRUIDO FASE 3`: agregar productos valida tenant y actividad; pagar vuelve a validarlos y bloquea saldos para impedir stock negativo.
+- `CONFIRMADO`: guardar una orden no reserva stock; la disponibilidad definitiva se comprueba al pagar.
 
 ### Productos → tienda pública
 
@@ -365,9 +370,9 @@ Ninguno de estos conceptos fue implementado.
 
 - Pruebas backend de integración requieren una base aislada; no deben ejecutarse contra producción.
 - Migraciones reproducibles para las tablas legacy.
-- Extender el mismo esquema de permisos a POS, cupones, QR y apartados cuando se reconstruyan.
+- Extender el mismo esquema de permisos a cupones, QR y apartados cuando se reconstruyan; POS ya aplica `pos.use` y `pos.history`.
 - Eliminación física/administración de archivos subidos.
-- Correcciones multi-tenant y de stock en POS, tienda pública, cupones, QR y apartados; el carrito aún debe comprobar/reservar stock.
+- Correcciones multi-tenant y de stock en tienda pública, cupones, QR y apartados; POS ya protege tenant/saldo y el carrito aún debe comprobar/reservar stock.
 - Índices/unique para stock, barcode, imágenes y consultas frecuentes.
 
 ## 16. Riesgos conocidos

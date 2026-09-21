@@ -65,4 +65,23 @@ describe('route guards', () => {
     }), storage)
     await expect(guard({ meta: { permissions: ['products.read', 'products.update'] }, path: '/dashboard/products/1/edit' })).resolves.toBe('/dashboard')
   })
+
+  it('enforces the existing POS permissions independently', async () => {
+    const guard = createAuthGuard(auth({
+      isAuthenticated: true,
+      userType: '1',
+      can: (permission) => permission === 'pos.history',
+    }), storage)
+    await expect(guard({ meta: { permission: 'pos.use' }, path: '/dashboard/pos' })).resolves.toBe('/dashboard')
+    await expect(guard({ meta: { permission: 'pos.history' }, path: '/dashboard/pos/history' })).resolves.toBe(true)
+  })
+
+  it('redirects users without dashboard access to an allowed module', async () => {
+    const guard = createAuthGuard(auth({
+      isAuthenticated: true,
+      userType: '1',
+      can: (permission) => permission === 'products.read',
+    }), storage)
+    await expect(guard({ meta: { permission: 'dashboard.view' }, path: '/dashboard' })).resolves.toBe('/dashboard/products')
+  })
 })

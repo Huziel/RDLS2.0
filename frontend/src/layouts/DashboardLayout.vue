@@ -15,10 +15,10 @@ const storeName = computed(() => extra.value?.nombre_tienda || store.value?.seri
 const publicStoreUrl = computed(() => store.value?.serial ? `/store/${store.value.serial}` : '/')
 
 const navigationItems = [
-  { to: '/dashboard', label: 'Panel', exact: true },
+  { to: '/dashboard', label: 'Panel', exact: true, permission: 'dashboard.view' },
   { to: '/dashboard/products', label: 'Productos', permission: 'products.read' },
   { to: '/dashboard/orders', label: 'Pedidos' },
-  { to: '/dashboard/pos', label: 'Punto de venta' },
+  { to: '/dashboard/pos', label: 'Punto de venta', permission: 'pos.use' },
   { to: '/dashboard/appointments', label: 'Agenda' },
   { to: '/dashboard/crm', label: 'CRM' },
   { to: '/dashboard/analytics', label: 'Analíticas' },

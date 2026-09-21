@@ -32,7 +32,12 @@ export function createAuthGuard(auth, storage = localStorage) {
     if (requiredPermissions.length
       && !auth.hasRole('super-admin')
       && requiredPermissions.some((permission) => !auth.can(permission))) {
-      return homeForUserType(auth.userType)
+      const home = homeForUserType(auth.userType)
+      if (home !== to.path) return home
+      if (auth.can('products.read')) return '/dashboard/products'
+      if (auth.can('pos.use')) return '/dashboard/pos'
+      if (auth.can('pos.history')) return '/dashboard/pos/history'
+      return '/'
     }
 
     const needsOnboarding = auth.isAuthenticated

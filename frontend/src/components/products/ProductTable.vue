@@ -15,7 +15,7 @@ defineEmits(['delete'])
   <div class="product-results">
     <table class="product-table">
       <thead>
-        <tr><th>Imagen</th><th>Nombre</th><th>Precio</th><th>Categoría</th><th>Estado</th><th>Acciones</th></tr>
+        <tr><th>Imagen</th><th>Nombre</th><th>Precio</th><th>Categoría</th><th>Stock</th><th>Estado</th><th>Acciones</th></tr>
       </thead>
       <tbody>
         <tr v-for="product in products" :key="product.id">
@@ -26,6 +26,7 @@ defineEmits(['delete'])
           <td><strong>{{ product.nombre }}</strong></td>
           <td>{{ formatProductPrice(product.precio) }}</td>
           <td>{{ product.categoria || 'Sin categoría' }}</td>
+          <td>{{ product.stock }}</td>
           <td><span class="status-badge" :class="product.activo ? 'active' : 'inactive'">{{ product.activo ? 'Activo' : 'Inactivo' }}</span></td>
           <td class="product-actions">
             <RouterLink v-if="canEdit" class="button button-secondary button-small" :aria-label="`Editar ${product.nombre}`" :to="`/dashboard/products/${product.id}/edit`">Editar</RouterLink>
@@ -48,6 +49,7 @@ defineEmits(['delete'])
           </div>
           <b>{{ formatProductPrice(product.precio) }}</b>
           <span>{{ product.categoria || 'Sin categoría' }}</span>
+          <span>Stock: {{ product.stock }}</span>
           <div class="product-actions">
             <RouterLink v-if="canEdit" class="button button-secondary button-small" :aria-label="`Editar ${product.nombre}`" :to="`/dashboard/products/${product.id}/edit`">Editar</RouterLink>
             <button v-if="canDelete" class="button button-danger button-small" type="button" :aria-label="`Eliminar ${product.nombre}`" :disabled="deletingId !== null" @click="$emit('delete', product)">Eliminar</button>

@@ -11,6 +11,7 @@ use App\Models\ProductImage;
 use App\Models\ProductStock;
 use App\Models\Store;
 use App\Models\StoreSubscription;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -47,6 +48,7 @@ class ProductController extends Controller
         try {
             $user = $request->user();
             $store = Store::byOwner($user->name)->firstOrFail();
+            $this->normalizeBarcode($request);
 
             $validated = $request->validate([
                 'nombre' => ['required', 'string', 'max:255'],
@@ -57,7 +59,7 @@ class ProductController extends Controller
                 'categoria' => ['nullable', 'string'],
                 'activo' => ['boolean'],
                 'stock' => ['nullable', 'integer', 'min:0'],
-                'codigo_barras' => ['nullable', 'string'], // Cambiado a string
+                'codigo_barras' => ['nullable', 'string', 'max:255'],
                 'imagenes' => ['nullable', 'array'],
                 'imagenes.*' => ['string'],
             ]);
@@ -75,6 +77,13 @@ class ProductController extends Controller
                 if ($maxProducts !== null
                     && Product::byStore($store->createdby)->count() >= $maxProducts) {
                     return null;
+                }
+
+                if ($this->hasBarcodeValue($validated['codigo_barras'] ?? null)
+                    && $this->barcodeExistsForStore($validated['codigo_barras'], $store->createdby)) {
+                    throw ValidationException::withMessages([
+                        'codigo_barras' => ['El codigo de barras ya pertenece a otro producto de esta tienda.'],
+                    ]);
                 }
 
                 $product = Product::create([
@@ -96,7 +105,7 @@ class ProductController extends Controller
                     ]);
                 }
 
-                if (isset($validated['codigo_barras']) && ! empty($validated['codigo_barras'])) {
+                if ($this->hasBarcodeValue($validated['codigo_barras'] ?? null)) {
                     ProductBarcode::create([
                         'idProd' => $product->id,
                         'code' => (string) $validated['codigo_barras'],
@@ -157,8 +166,7 @@ class ProductController extends Controller
         try {
             $user = $request->user();
             $store = Store::byOwner($user->name)->firstOrFail();
-            $product = Product::byStore($store->createdby)->findOrFail($id);
-
+            $this->normalizeBarcode($request);
             $validated = $request->validate([
                 'nombre' => ['sometimes', 'required', 'string', 'max:255'],
                 'precio' => ['sometimes', 'required', 'numeric', 'min:0'],
@@ -168,72 +176,73 @@ class ProductController extends Controller
                 'categoria' => ['nullable', 'string'],
                 'activo' => ['boolean'],
                 'stock' => ['nullable', 'integer', 'min:0'],
-                // ✅ Cambiar a: acepta cualquier valor que no sea null
-                'codigo_barras' => ['nullable'],
+                'codigo_barras' => ['nullable', 'string', 'max:255'],
                 'imagenes' => ['nullable', 'array'],
                 'imagenes.*' => ['string'],
             ]);
 
-            // ✅ Normalizar código de barras a string después de la validación
-            if (isset($validated['codigo_barras']) && ! is_null($validated['codigo_barras'])) {
-                $validated['codigo_barras'] = (string) $validated['codigo_barras'];
-            }
+            $product = DB::transaction(function () use ($store, $id, $validated) {
+                Store::whereKey($store->id)->lockForUpdate()->firstOrFail();
+                $product = Product::byStore($store->createdby)->lockForUpdate()->findOrFail($id);
 
-            $product->update([
-                'keyy' => $validated['nombre'] ?? $product->keyy,
-                'number' => $validated['precio'] ?? $product->number,
-                'link' => array_key_exists('imagen', $validated) ? $validated['imagen'] : $product->link,
-                'dscr' => array_key_exists('descripcion', $validated) ? $validated['descripcion'] : $product->dscr,
-                'var' => array_key_exists('variable', $validated) ? $validated['variable'] : $product->var,
-                'category' => array_key_exists('categoria', $validated) ? $validated['categoria'] : $product->category,
-                'active' => $validated['activo'] ?? $product->active,
-            ]);
-
-            // Manejar stock
-            if (array_key_exists('stock', $validated)) {
-                $stock = ProductStock::where('idProd', $product->id)->first();
-                if ($stock) {
-                    $stock->update(['stock' => $validated['stock']]);
-                } else {
-                    ProductStock::create([
-                        'idProd' => $product->id,
-                        'stock' => $validated['stock'],
-                        'typesd' => null,
+                if ($this->hasBarcodeValue($validated['codigo_barras'] ?? null)
+                    && $this->barcodeExistsForStore($validated['codigo_barras'], $store->createdby, $product->id)) {
+                    throw ValidationException::withMessages([
+                        'codigo_barras' => ['El codigo de barras ya pertenece a otro producto de esta tienda.'],
                     ]);
                 }
-            }
 
-            // Manejar código de barras
-            if (array_key_exists('codigo_barras', $validated)) {
-                $barcode = ProductBarcode::where('idProd', $product->id)->first();
-                if (empty($validated['codigo_barras'])) {
-                    $barcode?->delete();
-                } elseif ($barcode) {
-                    $barcode->update(['code' => (string) $validated['codigo_barras']]);
-                } else {
-                    ProductBarcode::create([
-                        'idProd' => $product->id,
-                        'code' => (string) $validated['codigo_barras'],
-                    ]);
-                }
-            }
+                $product->update([
+                    'keyy' => $validated['nombre'] ?? $product->keyy,
+                    'number' => $validated['precio'] ?? $product->number,
+                    'link' => array_key_exists('imagen', $validated) ? $validated['imagen'] : $product->link,
+                    'dscr' => array_key_exists('descripcion', $validated) ? $validated['descripcion'] : $product->dscr,
+                    'var' => array_key_exists('variable', $validated) ? $validated['variable'] : $product->var,
+                    'category' => array_key_exists('categoria', $validated) ? $validated['categoria'] : $product->category,
+                    'active' => $validated['activo'] ?? $product->active,
+                ]);
 
-            // Manejar imágenes
-            if (array_key_exists('imagenes', $validated)) {
-                ProductImage::where('product', $product->id)->delete();
-                foreach ($validated['imagenes'] as $img) {
-                    ProductImage::create([
-                        'picture' => $img,
-                        'dom' => $store->createdby,
-                        'product' => $product->id,
-                    ]);
+                if (array_key_exists('stock', $validated)) {
+                    ProductStock::updateOrCreate(
+                        ['idProd' => $product->id],
+                        ['stock' => $validated['stock'], 'typesd' => null],
+                    );
                 }
-            }
+
+                if (array_key_exists('codigo_barras', $validated)) {
+                    $barcode = ProductBarcode::where('idProd', $product->id)->first();
+                    if (! $this->hasBarcodeValue($validated['codigo_barras'])) {
+                        $barcode?->delete();
+                    } elseif ($barcode) {
+                        $barcode->update(['code' => $validated['codigo_barras']]);
+                    } else {
+                        ProductBarcode::create([
+                            'idProd' => $product->id,
+                            'code' => $validated['codigo_barras'],
+                        ]);
+                    }
+                }
+
+                if (array_key_exists('imagenes', $validated)) {
+                    ProductImage::where('product', $product->id)->delete();
+                    foreach ($validated['imagenes'] as $img) {
+                        ProductImage::create([
+                            'picture' => $img,
+                            'dom' => $store->createdby,
+                            'product' => $product->id,
+                        ]);
+                    }
+                }
+
+                return $product->fresh(['stock', 'barcode', 'images', 'addons']);
+            });
 
             return response()->json([
-                'data' => ProductDetailResource::make($product->fresh(['stock', 'barcode', 'images', 'addons'])),
+                'data' => ProductDetailResource::make($product),
                 'message' => 'Producto actualizado.',
             ]);
+        } catch (ModelNotFoundException) {
+            return response()->json(['message' => 'Producto no encontrado.'], 404);
         } catch (ValidationException $e) {
             return response()->json([
                 'message' => 'Error de validación',
@@ -286,6 +295,7 @@ class ProductController extends Controller
         $request->validate(['code' => ['required', 'string']]);
 
         $product = Product::byStore($store->createdby)
+            ->active()
             ->whereHas('barcode', fn ($query) => $query->where('code', $request->code))
             ->with(['stock', 'barcode'])
             ->first();
@@ -295,5 +305,25 @@ class ProductController extends Controller
         }
 
         return response()->json(['data' => ProductResource::make($product)]);
+    }
+
+    private function barcodeExistsForStore(string $code, string $storeOwner, ?int $exceptProductId = null): bool
+    {
+        return ProductBarcode::where('code', $code)
+            ->when($exceptProductId, fn ($query) => $query->where('idProd', '!=', $exceptProductId))
+            ->whereHas('product', fn ($query) => $query->byStore($storeOwner))
+            ->exists();
+    }
+
+    private function normalizeBarcode(Request $request): void
+    {
+        if ($request->has('codigo_barras') && is_int($request->input('codigo_barras'))) {
+            $request->merge(['codigo_barras' => (string) $request->input('codigo_barras')]);
+        }
+    }
+
+    private function hasBarcodeValue(mixed $barcode): bool
+    {
+        return $barcode !== null && $barcode !== '';
     }
 }
