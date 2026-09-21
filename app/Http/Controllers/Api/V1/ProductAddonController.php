@@ -13,7 +13,9 @@ class ProductAddonController extends Controller
 {
     public function publicIndex($productId)
     {
+        Product::active()->findOrFail($productId);
         $addons = ProductAddon::where('idProd', $productId)->where('activo', 1)->get();
+
         return ProductAddonResource::collection($addons);
     }
 

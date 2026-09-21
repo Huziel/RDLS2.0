@@ -2,8 +2,8 @@
 
 namespace App\Actions\Auth;
 
-use App\Models\User;
 use App\Models\Store;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
@@ -21,7 +21,7 @@ class RegisterUser
             ]);
 
             $expiration = now()->addYear()->format('d-m-Y H:i:s');
-            $serial = session()->getId() . rand(1, 999);
+            $serial = session()->getId().rand(1, 999);
 
             $store = Store::create([
                 'serial' => $serial,
@@ -49,10 +49,10 @@ class RegisterUser
 
             $user->assignRole($roleName);
 
-            $token = $user->createToken('auth-token', $user->getAllPermissions()->pluck('name')->toArray());
+            $token = $user->createToken('auth-token', $user->getAllPermissions()->pluck('name')->toArray(), now()->addHours(12));
 
             return [
-                'user' => $user->load('store'),
+                'user' => $user->load(['store', 'roles']),
                 'token' => $token->plainTextToken,
                 'store' => $store,
             ];

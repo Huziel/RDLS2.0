@@ -31,16 +31,12 @@ class LoginController extends Controller
         }
 
         $abilities = $user->getAllPermissions()->pluck('name')->toArray();
-        $token = $user->createToken('auth-token', $abilities);
-
-        if ($request->boolean('remember')) {
-            $token->accessToken->expires_at = now()->addDays(30);
-            $token->accessToken->save();
-        }
+        $expiresAt = $request->boolean('remember') ? now()->addDays(30) : now()->addHours(12);
+        $token = $user->createToken('auth-token', $abilities, $expiresAt);
 
         return response()->json([
             'data' => [
-                'user' => UserResource::make($user->load('store')),
+                'user' => UserResource::make($user->load(['store', 'roles'])),
                 'token' => $token->plainTextToken,
             ],
             'message' => 'Inicio de sesión exitoso.',

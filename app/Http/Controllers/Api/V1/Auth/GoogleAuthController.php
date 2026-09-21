@@ -33,11 +33,11 @@ class GoogleAuthController extends Controller
 
         if ($user) {
             $abilities = $user->getAllPermissions()->pluck('name')->toArray();
-            $token = $user->createToken('auth-token', $abilities);
+            $token = $user->createToken('auth-token', $abilities, now()->addHours(12));
 
             return response()->json([
                 'data' => [
-                    'user' => UserResource::make($user->load('store')),
+                    'user' => UserResource::make($user->load(['store', 'roles'])),
                     'token' => $token->plainTextToken,
                 ],
                 'message' => 'Inicio de sesión con Google exitoso.',

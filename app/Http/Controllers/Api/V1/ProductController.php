@@ -10,7 +10,10 @@ use App\Models\ProductBarcode;
 use App\Models\ProductImage;
 use App\Models\ProductStock;
 use App\Models\Store;
+use App\Models\StoreSubscription;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 class ProductController extends Controller
@@ -27,7 +30,7 @@ class ProductController extends Controller
         }
 
         if ($request->has('search')) {
-            $query->where('keyy', 'like', '%' . $request->search . '%');
+            $query->where('keyy', 'like', '%'.$request->search.'%');
         }
 
         if ($request->has('active')) {
@@ -60,44 +63,61 @@ class ProductController extends Controller
             ]);
 
             // Convertir código de barras a string si existe
-            if (isset($validated['codigo_barras']) && !is_null($validated['codigo_barras'])) {
+            if (isset($validated['codigo_barras']) && ! is_null($validated['codigo_barras'])) {
                 $validated['codigo_barras'] = (string) $validated['codigo_barras'];
             }
 
-            $product = Product::create([
-                'number' => $validated['precio'],
-                'keyy' => $validated['nombre'],
-                'link' => $validated['imagen'] ?? null,
-                'session' => $store->createdby,
-                'dscr' => $validated['descripcion'] ?? null,
-                'var' => $validated['variable'] ?? null,
-                'category' => $validated['categoria'] ?? null,
-                'active' => $validated['activo'] ?? true,
-            ]);
+            $product = DB::transaction(function () use ($store, $validated) {
+                Store::whereKey($store->id)->lockForUpdate()->firstOrFail();
+                $subscription = StoreSubscription::getOrCreateDefault($store->id);
+                $maxProducts = $subscription->plan->max_products;
 
-            if (isset($validated['stock'])) {
-                ProductStock::create([
-                    'idProd' => $product->id,
-                    'stock' => $validated['stock'],
-                    'typesd' => null,
+                if ($maxProducts !== null
+                    && Product::byStore($store->createdby)->count() >= $maxProducts) {
+                    return null;
+                }
+
+                $product = Product::create([
+                    'number' => $validated['precio'],
+                    'keyy' => $validated['nombre'],
+                    'link' => $validated['imagen'] ?? null,
+                    'session' => $store->createdby,
+                    'dscr' => $validated['descripcion'] ?? null,
+                    'var' => $validated['variable'] ?? null,
+                    'category' => $validated['categoria'] ?? null,
+                    'active' => $validated['activo'] ?? true,
                 ]);
-            }
 
-            if (isset($validated['codigo_barras']) && !empty($validated['codigo_barras'])) {
-                ProductBarcode::create([
-                    'idProd' => $product->id,
-                    'code' => (string) $validated['codigo_barras'],
-                ]);
-            }
+                if (isset($validated['stock'])) {
+                    ProductStock::create([
+                        'idProd' => $product->id,
+                        'stock' => $validated['stock'],
+                        'typesd' => null,
+                    ]);
+                }
 
-            if (isset($validated['imagenes'])) {
-                foreach ($validated['imagenes'] as $img) {
+                if (isset($validated['codigo_barras']) && ! empty($validated['codigo_barras'])) {
+                    ProductBarcode::create([
+                        'idProd' => $product->id,
+                        'code' => (string) $validated['codigo_barras'],
+                    ]);
+                }
+
+                foreach ($validated['imagenes'] ?? [] as $img) {
                     ProductImage::create([
                         'picture' => $img,
                         'dom' => $store->createdby,
                         'product' => $product->id,
                     ]);
                 }
+
+                return $product;
+            });
+
+            if (! $product) {
+                return response()->json([
+                    'message' => 'Alcanzaste el limite de productos de tu plan.',
+                ], 422);
             }
 
             return response()->json([
@@ -107,12 +127,13 @@ class ProductController extends Controller
         } catch (ValidationException $e) {
             return response()->json([
                 'message' => 'Error de validación',
-                'errors' => $e->errors()
+                'errors' => $e->errors(),
             ], 422);
         } catch (\Exception $e) {
+            Log::error('Error al crear producto', ['exception' => $e]);
+
             return response()->json([
                 'message' => 'Error al crear el producto',
-                'error' => $e->getMessage()
             ], 500);
         }
     }
@@ -154,17 +175,17 @@ class ProductController extends Controller
             ]);
 
             // ✅ Normalizar código de barras a string después de la validación
-            if (isset($validated['codigo_barras']) && !is_null($validated['codigo_barras'])) {
+            if (isset($validated['codigo_barras']) && ! is_null($validated['codigo_barras'])) {
                 $validated['codigo_barras'] = (string) $validated['codigo_barras'];
             }
 
             $product->update([
                 'keyy' => $validated['nombre'] ?? $product->keyy,
                 'number' => $validated['precio'] ?? $product->number,
-                'link' => $validated['imagen'] ?? $product->link,
-                'dscr' => $validated['descripcion'] ?? $product->dscr,
-                'var' => $validated['variable'] ?? $product->var,
-                'category' => $validated['categoria'] ?? $product->category,
+                'link' => array_key_exists('imagen', $validated) ? $validated['imagen'] : $product->link,
+                'dscr' => array_key_exists('descripcion', $validated) ? $validated['descripcion'] : $product->dscr,
+                'var' => array_key_exists('variable', $validated) ? $validated['variable'] : $product->var,
+                'category' => array_key_exists('categoria', $validated) ? $validated['categoria'] : $product->category,
                 'active' => $validated['activo'] ?? $product->active,
             ]);
 
@@ -177,7 +198,7 @@ class ProductController extends Controller
                     ProductStock::create([
                         'idProd' => $product->id,
                         'stock' => $validated['stock'],
-                        'typesd' => null
+                        'typesd' => null,
                     ]);
                 }
             }
@@ -185,12 +206,14 @@ class ProductController extends Controller
             // Manejar código de barras
             if (array_key_exists('codigo_barras', $validated)) {
                 $barcode = ProductBarcode::where('idProd', $product->id)->first();
-                if ($barcode) {
+                if (empty($validated['codigo_barras'])) {
+                    $barcode?->delete();
+                } elseif ($barcode) {
                     $barcode->update(['code' => (string) $validated['codigo_barras']]);
-                } else if (!empty($validated['codigo_barras'])) {
+                } else {
                     ProductBarcode::create([
                         'idProd' => $product->id,
-                        'code' => (string) $validated['codigo_barras']
+                        'code' => (string) $validated['codigo_barras'],
                     ]);
                 }
             }
@@ -214,12 +237,13 @@ class ProductController extends Controller
         } catch (ValidationException $e) {
             return response()->json([
                 'message' => 'Error de validación',
-                'errors' => $e->errors()
+                'errors' => $e->errors(),
             ], 422);
         } catch (\Exception $e) {
+            Log::error('Error al actualizar producto', ['exception' => $e, 'product_id' => $id]);
+
             return response()->json([
                 'message' => 'Error al actualizar el producto',
-                'error' => $e->getMessage()
             ], 500);
         }
     }
@@ -239,7 +263,8 @@ class ProductController extends Controller
 
     public function publicShow($id)
     {
-        $product = Product::with('images')->findOrFail($id);
+        $product = Product::active()->with('images')->findOrFail($id);
+
         return response()->json(['data' => ProductResource::make($product)]);
     }
 
@@ -249,6 +274,7 @@ class ProductController extends Controller
         $products = Product::byStore($store->createdby)->active()
             ->with(['stock', 'images'])
             ->orderByDesc('id')->paginate($request->get('per_page', 100));
+
         return ProductResource::collection($products);
     }
 
@@ -259,15 +285,9 @@ class ProductController extends Controller
 
         $request->validate(['code' => ['required', 'string']]);
 
-        $barcode = ProductBarcode::where('code', $request->code)->first();
-
-        if (! $barcode) {
-            return response()->json(['message' => 'Producto no encontrado.'], 404);
-        }
-
-        $product = Product::with(['stock', 'barcode'])
-            ->where('id', $barcode->idProd)
-            ->where('session', $store->createdby)
+        $product = Product::byStore($store->createdby)
+            ->whereHas('barcode', fn ($query) => $query->where('code', $request->code))
+            ->with(['stock', 'barcode'])
             ->first();
 
         if (! $product) {

@@ -18,7 +18,6 @@ class ProductResource extends JsonResource
             'variable' => $this->var,
             'categoria' => $this->category,
             'activo' => (bool) $this->active,
-            'store_session' => $this->session,
             'stock' => $this->whenLoaded('stock', fn () => $this->stock?->stock ?? 0),
             'codigo_barras' => $this->whenLoaded('barcode', fn () => $this->barcode?->code),
             'imagenes' => $this->whenLoaded('images', fn () => $this->images->pluck('picture')),

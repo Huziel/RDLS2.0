@@ -11,7 +11,7 @@ class UserController extends Controller
     public function show(Request $request)
     {
         return response()->json([
-            'data' => UserResource::make($request->user()->load('store')),
+            'data' => UserResource::make($request->user()->load(['store', 'roles'])),
         ]);
     }
 

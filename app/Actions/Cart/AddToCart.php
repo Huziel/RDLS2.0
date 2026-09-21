@@ -8,19 +8,15 @@ use App\Models\Product;
 use App\Models\ProductAddon;
 use App\Models\Store;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class AddToCart
 {
     public function __invoke(string $sessionId, string $storeSerial, int $productId, int $quantity, array $selectedAddonIds = []): Cart
     {
         return DB::transaction(function () use ($sessionId, $storeSerial, $productId, $quantity, $selectedAddonIds) {
-            $product = Product::with('addons')->findOrFail($productId);
-
-            if (! $product->active) {
-                throw new \Exception('Este producto no está disponible.');
-            }
-
             $store = Store::where('serial', $storeSerial)->firstOrFail();
+            $product = Product::byStore($store->createdby)->active()->findOrFail($productId);
 
             // Check if same product (without addons) is already in cart
             $existing = Cart::active()
@@ -34,13 +30,26 @@ class AddToCart
                 $newQty = $existing->cant + $quantity;
                 $newPrice = ($product->number * $newQty);
                 $existing->update(['cant' => $newQty, 'price' => $newPrice]);
+
                 return $existing;
             }
 
             // Calculate price with addons
             $addonPrice = 0;
             if (! empty($selectedAddonIds)) {
-                $addonPrice = ProductAddon::whereIn('id', $selectedAddonIds)->sum('precio');
+                $selectedAddonIds = array_values(array_unique($selectedAddonIds));
+                $addons = ProductAddon::where('idProd', $product->id)
+                    ->where('activo', 1)
+                    ->whereIn('id', $selectedAddonIds)
+                    ->get();
+
+                if ($addons->count() !== count($selectedAddonIds)) {
+                    throw ValidationException::withMessages([
+                        'addon_ids' => ['Uno o mas extras no pertenecen al producto o no estan disponibles.'],
+                    ]);
+                }
+
+                $addonPrice = $addons->sum('precio');
             }
 
             $unitPrice = $product->number + $addonPrice;

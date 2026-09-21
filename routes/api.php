@@ -1,38 +1,38 @@
 <?php
 
+use App\Http\Controllers\Api\V1\AdGeneratorController;
+use App\Http\Controllers\Api\V1\AdminController;
+use App\Http\Controllers\Api\V1\AnalyticsController;
+use App\Http\Controllers\Api\V1\AppointmentController;
 use App\Http\Controllers\Api\V1\Auth\ForgotPasswordController;
 use App\Http\Controllers\Api\V1\Auth\GoogleAuthController;
 use App\Http\Controllers\Api\V1\Auth\LoginController;
 use App\Http\Controllers\Api\V1\Auth\LogoutController;
 use App\Http\Controllers\Api\V1\Auth\RegisterController;
 use App\Http\Controllers\Api\V1\Auth\ResetPasswordController;
-use App\Http\Controllers\Api\V1\CartController;
-use App\Http\Controllers\Api\V1\AnalyticsController;
-use App\Http\Controllers\Api\V1\AppointmentController;
 use App\Http\Controllers\Api\V1\BarterController;
+use App\Http\Controllers\Api\V1\CartController;
 use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\ChatController;
 use App\Http\Controllers\Api\V1\CouponController;
 use App\Http\Controllers\Api\V1\CrmController;
-use App\Http\Controllers\Api\V1\CustomPageController;
 use App\Http\Controllers\Api\V1\CustomizerController;
-use App\Http\Controllers\Api\V1\AdGeneratorController;
-use App\Http\Controllers\Api\V1\AdminController;
+use App\Http\Controllers\Api\V1\CustomPageController;
 use App\Http\Controllers\Api\V1\DashboardController;
+use App\Http\Controllers\Api\V1\DeliveryController;
 use App\Http\Controllers\Api\V1\LayawayController;
 use App\Http\Controllers\Api\V1\LoyaltyController;
 use App\Http\Controllers\Api\V1\MarketplaceController;
-use App\Http\Controllers\Api\V1\QrController;
-use App\Http\Controllers\Api\V1\UploadController;
-use App\Http\Controllers\Api\V1\DeliveryController;
 use App\Http\Controllers\Api\V1\MediaController;
 use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PosController;
 use App\Http\Controllers\Api\V1\ProductAddonController;
 use App\Http\Controllers\Api\V1\ProductController;
+use App\Http\Controllers\Api\V1\QrController;
 use App\Http\Controllers\Api\V1\Store\StoreController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
+use App\Http\Controllers\Api\V1\UploadController;
 use App\Http\Controllers\Api\V1\UserController;
 use Illuminate\Support\Facades\Route;
 
@@ -57,8 +57,8 @@ Route::prefix('v1')->group(function () {
     Route::get('public/stores/{serial}', [StoreController::class, 'publicShow']);
     Route::get('public/stores/{serial}/theme', [StoreController::class, 'publicTheme']);
     Route::get('public/stores/{serial}/availability', [StoreController::class, 'publicAvailability']);
-    Route::get('public/stores/{serial}/products', [\App\Http\Controllers\Api\V1\ProductController::class, 'publicIndex']);
-    Route::get('public/products/{id}', [\App\Http\Controllers\Api\V1\ProductController::class, 'publicShow']);
+    Route::get('public/stores/{serial}/products', [ProductController::class, 'publicIndex']);
+    Route::get('public/products/{id}', [ProductController::class, 'publicShow']);
     Route::get('public/products/{product}/addons', [ProductAddonController::class, 'publicIndex']);
     Route::get('qr/{id}/track', [QrController::class, 'track']);
     Route::post('public/bookings', [AppointmentController::class, 'publicStore']);
@@ -105,12 +105,21 @@ Route::prefix('v1')->group(function () {
         Route::get('store/ratings', [StoreController::class, 'ratings']);
 
         // Products
-        Route::get('products/search-barcode', [ProductController::class, 'searchByBarcode']);
-        Route::apiResource('products', ProductController::class);
-        Route::get('products/{product}/addons', [ProductAddonController::class, 'index']);
-        Route::post('products/{product}/addons', [ProductAddonController::class, 'store']);
-        Route::put('products/{product}/addons/{addon}', [ProductAddonController::class, 'update']);
-        Route::delete('products/{product}/addons/{addon}', [ProductAddonController::class, 'destroy']);
+        Route::get('products/search-barcode', [ProductController::class, 'searchByBarcode'])
+            ->middleware('role_or_permission:super-admin|products.read');
+        Route::apiResource('products', ProductController::class)
+            ->middlewareFor(['index', 'show'], 'role_or_permission:super-admin|products.read')
+            ->middlewareFor('store', 'role_or_permission:super-admin|products.create')
+            ->middlewareFor('update', 'role_or_permission:super-admin|products.update')
+            ->middlewareFor('destroy', 'role_or_permission:super-admin|products.delete');
+        Route::get('products/{product}/addons', [ProductAddonController::class, 'index'])
+            ->middleware('role_or_permission:super-admin|products.read');
+        Route::post('products/{product}/addons', [ProductAddonController::class, 'store'])
+            ->middleware('role_or_permission:super-admin|products.update');
+        Route::put('products/{product}/addons/{addon}', [ProductAddonController::class, 'update'])
+            ->middleware('role_or_permission:super-admin|products.update');
+        Route::delete('products/{product}/addons/{addon}', [ProductAddonController::class, 'destroy'])
+            ->middleware('role_or_permission:super-admin|products.update');
 
         // POS
         Route::get('pos/orders', [PosController::class, 'activeOrders']);
@@ -248,7 +257,8 @@ Route::prefix('v1')->group(function () {
         Route::get('analytics/monthly', [AnalyticsController::class, 'monthlyComparison']);
 
         // Categories
-        Route::get('categories', [CategoryController::class, 'index']);
+        Route::get('categories', [CategoryController::class, 'index'])
+            ->middleware('role_or_permission:super-admin|products.read|products.create|products.update');
 
         // Coupons (store owner)
         Route::get('coupons', [CouponController::class, 'index']);
@@ -263,7 +273,7 @@ Route::prefix('v1')->group(function () {
 
         // Orders (customer)
         Route::get('my-orders', [OrderController::class, 'myOrders']);
-});
+    });
 
     // Public cart (session-based, no auth required)
     Route::get('stores/{storeSerial}/cart', [CartController::class, 'index']);
