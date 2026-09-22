@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\ProductAddonResource;
 use App\Http\Resources\ProductDetailResource;
 use App\Http\Resources\ProductResource;
 use App\Models\Product;
@@ -278,19 +279,51 @@ class ProductController extends Controller
 
     public function publicShow($id)
     {
-        $product = Product::active()->with('images')->findOrFail($id);
+        $product = Product::active()
+            ->with(['images', 'stock', 'addons' => fn ($query) => $query->where('activo', 1)])
+            ->findOrFail($id);
 
-        return response()->json(['data' => ProductResource::make($product)]);
+        $resource = ProductResource::make($product)->resolve();
+        $resource['stock'] = (float) ($product->stock?->stock ?? 0);
+        $resource['aditivos'] = ProductAddonResource::collection($product->addons);
+
+        return response()->json(['data' => $resource]);
     }
 
     public function publicIndex(Request $request, $serial)
     {
         $store = Store::where('serial', $serial)->firstOrFail();
+        $perPage = min(200, max(1, (int) $request->get('per_page', 100)));
+
         $products = Product::byStore($store->createdby)->active()
             ->with(['stock', 'images'])
-            ->orderByDesc('id')->paginate($request->get('per_page', 100));
+            ->when($request->filled('category'), fn ($query) => $query->where('category', $request->input('category')))
+            ->when($request->filled('search'), fn ($query) => $query->where(function ($query) use ($request) {
+                $query->where('keyy', 'like', '%'.$request->input('search').'%')
+                    ->orWhere('dscr', 'like', '%'.$request->input('search').'%');
+            }))
+            ->orderByDesc('id')
+            ->paginate($perPage)->withQueryString();
 
-        return ProductResource::collection($products);
+        $mapped = $products->through(function (Product $product) {
+            $resource = ProductResource::make($product)->resolve();
+            $resource['stock'] = (float) ($product->stock?->stock ?? 0);
+            $resource['aditivos'] = ProductAddonResource::collection(
+                $product->addons()->where('activo', 1)->get()
+            );
+
+            return $resource;
+        });
+
+        return response()->json([
+            'data' => $mapped->items(),
+            'meta' => [
+                'current_page' => $products->currentPage(),
+                'last_page' => $products->lastPage(),
+                'per_page' => $products->perPage(),
+                'total' => $products->total(),
+            ],
+        ]);
     }
 
     public function searchByBarcode(Request $request)

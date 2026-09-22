@@ -2,10 +2,13 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Actions\MercadoPago\CreatePreference;
+use App\Actions\Order\CancelOrder;
 use App\Actions\Order\Checkout;
 use App\Http\Controllers\Controller;
 use App\Models\Cart;
 use App\Models\ExtraCharge;
+use App\Models\MercadoPagoAccount;
 use App\Models\PurchaseOrder;
 use App\Models\ShippingOrder;
 use App\Models\Store;
@@ -268,6 +271,10 @@ class OrderController extends Controller
                 'image' => $i->productData->link ?? null,
                 'qty' => (int) $i->cant,
                 'price' => (float) $i->price,
+                'addons' => $i->addons->map(fn ($a) => [
+                    'name' => $a->addon->nombre ?? '',
+                    'price' => (float) ($a->addon->precio ?? 0),
+                ]),
             ]);
 
         return response()->json(['data' => [
@@ -279,7 +286,141 @@ class OrderController extends Controller
             'envio' => (float) $order->totEnvio,
             'fecha' => $order->date,
             'items' => $items,
+            'status' => $this->orderStatus($order),
+            'payment' => $order->mercadoPagoPayment ? [
+                'status' => (int) $order->mercadoPagoPayment->status === 1 ? 'approved' : 'pending',
+                'preference' => $order->mercadoPagoPayment->preference ?: null,
+                'payment_id' => $order->mercadoPagoPayment->payment_id ?: null,
+            ] : null,
         ]]);
+    }
+
+    public function orderStatus($order): string
+    {
+        if ($order->isCancelled()) {
+            return 'cancelled';
+        }
+
+        return $order->isPaid() ? 'paid' : 'pending';
+    }
+
+    // Public: request a MercadoPago preference for the customer's own order
+    public function publicPaymentPreference(Request $request, $storeSerial, $orderReference)
+    {
+        $cartToken = $this->requireCartToken($request);
+        $order = $this->publicOrder($cartToken, $storeSerial, $orderReference);
+        if (! $order) {
+            return response()->json(['message' => 'Orden no encontrada.'], 404);
+        }
+        if ($order->isCancelled()) {
+            return response()->json(['message' => 'La orden fue cancelada.'], 422);
+        }
+        if ($order->isPaid()) {
+            return response()->json(['message' => 'La orden ya fue pagada.'], 422);
+        }
+
+        $store = $order->store;
+        $account = $store ? MercadoPagoAccount::where('idLog', $store->owner?->id)->first() : null;
+        if (! $account || ! $account->merchantId) {
+            return response()->json(['message' => 'Esta tienda debe configurar su cuenta de MercadoPago.'], 422);
+        }
+
+        try {
+            $preference = app(CreatePreference::class)($order, $account, $store);
+
+            return response()->json([
+                'data' => [
+                    'order_id' => $order->order,
+                    'preference_id' => $preference['preference_id'],
+                    'init_point' => $preference['init_point'],
+                    'sandbox_init_point' => $preference['sandbox_init_point'],
+                ],
+                'message' => 'Preferencia de pago creada.',
+            ]);
+        } catch (Throwable $exception) {
+            Log::warning('Public MercadoPago preference failed.', [
+                'order' => $order->order,
+                'exception' => $exception,
+            ]);
+
+            return response()->json(['message' => 'No fue posible crear la preferencia de pago.'], 502);
+        }
+    }
+
+    // Public: poll payment/order status after a MercadoPago redirect
+    public function publicPaymentStatus(Request $request, $storeSerial, $orderReference)
+    {
+        $cartToken = $this->requireCartToken($request);
+        $order = $this->publicOrder($cartToken, $storeSerial, $orderReference);
+        if (! $order) {
+            return response()->json(['message' => 'Orden no encontrada.'], 404);
+        }
+
+        return response()->json(['data' => [
+            'order' => $order->order,
+            'status' => $this->orderStatus($order),
+            'payment' => $order->mercadoPagoPayment ? [
+                'status' => (int) $order->mercadoPagoPayment->status === 1 ? 'approved' : 'pending',
+                'preference' => $order->mercadoPagoPayment->preference ?: null,
+                'payment_id' => $order->mercadoPagoPayment->payment_id ?: null,
+            ] : null,
+        ]]);
+    }
+
+    // Public: customer cancels her own pending order (stock is restored once)
+    public function publicCancel(Request $request, $storeSerial, $orderReference)
+    {
+        $cartToken = $this->requireCartToken($request);
+        $order = $this->publicOrder($cartToken, $storeSerial, $orderReference);
+        if (! $order) {
+            return response()->json(['message' => 'Orden no encontrada.'], 404);
+        }
+        if ($order->isPaid()) {
+            return response()->json(['message' => 'Una orden pagada no puede cancelarse publicamente.'], 422);
+        }
+
+        $result = app(CancelOrder::class)($order);
+
+        return response()->json([
+            'data' => $result,
+            'message' => 'Orden cancelada. Se repuso el inventario.',
+        ]);
+    }
+
+    // Store owner: cancel any own order (paid orders flag a manual refund)
+    public function cancel(Request $request, $id)
+    {
+        $user = $request->user();
+        $store = Store::byOwner($user->name)->firstOrFail();
+        $order = PurchaseOrder::where('serial', $store->serial)->findOrFail($id);
+
+        $result = app(CancelOrder::class)($order);
+
+        return response()->json([
+            'data' => $result,
+            'message' => $result['idempotent'] ? 'La orden ya estaba cancelada.' : 'Orden cancelada.',
+        ]);
+    }
+
+    private function requireCartToken(Request $request): string
+    {
+        $cartToken = $request->header('X-Cart-Token');
+        if (! is_string($cartToken) || trim($cartToken) === '') {
+            abort(404, 'Orden no encontrada.');
+        }
+
+        return $cartToken;
+    }
+
+    private function publicOrder(string $cartToken, string $storeSerial, string $reference): ?PurchaseOrder
+    {
+        $query = PurchaseOrder::where('session', $cartToken)->where('serial', $storeSerial);
+        $order = is_numeric($reference)
+            ? $query->find($reference)
+            : $query->where('order', $reference)->first();
+
+        /** @var PurchaseOrder|null $order */
+        return $order;
     }
 
     // Store owner: add extra charge
@@ -306,6 +447,7 @@ class OrderController extends Controller
                 ->where('variation', $store->serial)
                 ->where('status', '!=', '3')
                 ->update(['status' => '3']);
+            $order->update(['order_state' => PurchaseOrder::STATE_PAID]);
 
             return $order;
         });

@@ -12,8 +12,29 @@ class PurchaseOrder extends Model
 
     protected $fillable = [
         'order', 'tel', 'serial', 'session', 'lat', 'long', 'total', 'totEnvio', 'nombre', 'date',
-        'checkout_key', 'loyalty_discount',
+        'checkout_key', 'loyalty_discount', 'order_state', 'cancelled_at', 'restock_key',
     ];
+
+    protected $casts = [
+        'cancelled_at' => 'datetime',
+    ];
+
+    public const STATE_PENDING = 'pending';
+
+    public const STATE_PAID = 'paid';
+
+    public const STATE_CANCELLED = 'cancelled';
+
+    public function isPaid(): bool
+    {
+        return (string) $this->order_state === self::STATE_PAID
+            || $this->cartItems()->where('status', '3')->exists();
+    }
+
+    public function isCancelled(): bool
+    {
+        return (string) $this->order_state === self::STATE_CANCELLED;
+    }
 
     public function store()
     {
@@ -38,5 +59,10 @@ class PurchaseOrder extends Model
     public function shippingOrder()
     {
         return $this->hasOne(ShippingOrder::class, 'ordenCompra', 'id');
+    }
+
+    public function mercadoPagoPayment()
+    {
+        return $this->hasOne(MercadoPagoPayment::class, 'orderP', 'order');
     }
 }

@@ -31,11 +31,28 @@ class PaymentSecurityTest extends TestCase
             'merchantId' => '123',
         ]);
         $order = $this->order($store, 'OWN-ORDER', 50, 20);
+        Cart::create([
+            'product' => 1,
+            'price' => 50,
+            'dom' => $store->createdby,
+            'user' => 'payment-cart',
+            'variation' => $store->serial,
+            'cant' => 1,
+            'status' => 2,
+            'orderC' => $order->order,
+        ]);
         $foreignStore = Store::create([
             'serial' => 'FOREIGN-PAYMENTS',
             'createdby' => 'foreign@example.test',
         ]);
         $foreignOrder = $this->order($foreignStore, 'FOREIGN-ORDER', 100);
+        Http::fake([
+            'api.mercadopago.com/checkout/preferences' => Http::response([
+                'id' => 'PREF-OWN',
+                'init_point' => 'https://sandbox.mercadopago.com/init',
+                'sandbox_init_point' => 'https://sandbox.mercadopago.com/init-test',
+            ]),
+        ]);
 
         $this->postJson("/api/v1/payments/orders/{$foreignOrder->id}/preference")->assertNotFound();
         $this->postJson("/api/v1/payments/orders/{$order->id}/preference")

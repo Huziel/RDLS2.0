@@ -51,7 +51,7 @@ carrito estado 0
   -> acreditar puntos
 ```
 
-El inventario se consume al crear la orden, no al confirmar el pago. Esta decision evita overselling con el flujo historico, donde checkout ya materializa el pedido. Todavia no existe cancelacion automatica con reposicion; cualquier cambio de esa politica requiere una fase de negocio explicita.
+El inventario se consume al crear la orden, no al confirmar el pago. Esta decision evita overselling con el flujo historico, donde checkout ya materializa el pedido. La cancelacion automatica con reposicion idempotente llega en FASE 5 (ver `docs/order-cancellation-stock.md`).
 
 `Idempotency-Key` es opcional, no vacio y de hasta 100 caracteres. Backend almacena un hash SHA-256 de tienda, token de carrito y llave, por lo que la misma llave usada por dos carritos no colisiona. Si no se envia, la llave se deriva de tienda, token y lineas. Solo un reintento con llave explicita puede recuperar una orden despues de que el carrito queda vacio.
 
@@ -114,7 +114,7 @@ Filtros de historial: `from=Y-m-d`, `to=Y-m-d`, `payment=efectivo|tarjeta|transf
 - Cada cuenta guarda el `merchantId` verificado por MercadoPago; el webhook usa el token de esa tienda y compara `collector_id` y propietario.
 - La confirmacion bloquea el registro de pago y actualiza solo carritos del mismo folio y serial.
 
-El endpoint historico llamado `preference` conserva su respuesta de metadatos; todavia no crea una preferencia remota en MercadoPago. La reconstruccion de la integracion de cobro online completa queda fuera de esta fase.
+FASE 5 reemplaza este parrafo: el endpoint `preference` de administracion conserva su respuesta (alcance autenticado, ahora con items reales), y el flujo publico crea preferencias remotas reales de Checkout Pro y confirma pagos solo por webhook verificado. Ver `docs/mercadopago-integration.md`.
 
 ## Proteccion de bases
 
@@ -167,8 +167,9 @@ Ninguna migracion fue ejecutada contra produccion.
 
 - Las tablas centrales siguen siendo esquema legacy y no nacen de migraciones base del repositorio.
 - Precio, cantidad y stock conservan tipos legacy de texto/double en produccion.
-- No existe reposicion automatica al cancelar una orden online.
 - Stock de addons sigue siendo informativo y no se descuenta.
 - Ventas POS pagadas permanecen en tabla activa estado 2 y en historial por compatibilidad.
 - Los folios historicos ya redondeados no pueden reconstruirse.
-- La preferencia MercadoPago remota sigue pendiente.
+- El reembolso de una orden pagada cancelada es manual (ver `docs/order-cancellation-stock.md`).
+
+FASE 5 anade la cancelacion idempotente con reposicion y la integracion MercadoPago real; ver `docs/order-cancellation-stock.md`, `docs/mercadopago-integration.md` y `docs/public-store-reconstruction.md`.

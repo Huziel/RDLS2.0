@@ -274,6 +274,7 @@ Route::prefix('v1')->group(function () {
         Route::get('orders', [OrderController::class, 'index']);
         Route::get('orders/{id}', [OrderController::class, 'show']);
         Route::put('orders/{id}/confirm-payment', [OrderController::class, 'confirmPayment']);
+        Route::post('orders/{id}/cancel', [OrderController::class, 'cancel']);
         Route::post('orders/{id}/extra-charge', [OrderController::class, 'addExtraCharge']);
 
         // Orders (customer)
@@ -290,6 +291,11 @@ Route::prefix('v1')->group(function () {
 
     // Public checkout (creates order)
     Route::post('stores/{storeSerial}/checkout', [OrderController::class, 'checkout']);
+
+    // Public MercadoPago preference, status and cancellation (session-based)
+    Route::post('stores/{storeSerial}/orders/{order}/pay', [OrderController::class, 'publicPaymentPreference']);
+    Route::get('stores/{storeSerial}/orders/{order}/status', [OrderController::class, 'publicPaymentStatus']);
+    Route::post('stores/{storeSerial}/orders/{order}/cancel', [OrderController::class, 'publicCancel']);
 
     // Public custom page
     Route::get('pages/{slug}', [CustomPageController::class, 'showBySlug']);

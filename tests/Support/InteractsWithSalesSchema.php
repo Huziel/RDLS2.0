@@ -46,8 +46,12 @@ trait InteractsWithSalesSchema
             $table->string('date', 100);
             $table->string('checkout_key', 64)->nullable();
             $table->decimal('loyalty_discount', 12, 2)->default(0);
+            $table->string('order_state', 20)->nullable();
+            $table->timestamp('cancelled_at')->nullable();
+            $table->string('restock_key', 64)->nullable();
             $table->unique('order');
             $table->unique(['serial', 'checkout_key']);
+            $table->unique('restock_key');
         });
 
         Schema::create('formularioenvios', function (Blueprint $table) {
@@ -135,6 +139,7 @@ trait InteractsWithSalesSchema
             $table->integer('status');
             $table->string('preference')->default('');
             $table->string('fecha')->nullable();
+            $table->unsignedBigInteger('payment_id')->nullable();
             $table->unique('orderP');
         });
     }

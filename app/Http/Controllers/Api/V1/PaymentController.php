@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Actions\MercadoPago\CreatePreference;
 use App\Http\Controllers\Controller;
 use App\Models\MercadoPagoAccount;
 use App\Models\MercadoPagoPayment;
@@ -11,6 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class PaymentController extends Controller
 {
@@ -27,7 +29,7 @@ class PaymentController extends Controller
                 ->acceptJson()
                 ->timeout(8)
                 ->get('https://api.mercadopago.com/users/me');
-        } catch (\Throwable $exception) {
+        } catch (Throwable $exception) {
             Log::warning('MercadoPago account verification failed.', ['exception' => $exception]);
 
             return response()->json(['message' => 'No fue posible verificar la cuenta de MercadoPago.'], 502);
@@ -68,10 +70,16 @@ class PaymentController extends Controller
             return response()->json(['message' => 'Esta tienda debe verificar su cuenta de MercadoPago.'], 422);
         }
 
-        MercadoPagoPayment::firstOrCreate(
-            ['orderP' => $order->order],
-            ['status' => '0', 'preference' => '', 'fecha' => now()->format('Y-m-d H:i:s')],
-        );
+        try {
+            $preference = app(CreatePreference::class)($order, $acc, $store);
+        } catch (Throwable $exception) {
+            Log::warning('MercadoPago preference creation failed.', [
+                'order' => $order->order,
+                'exception' => $exception,
+            ]);
+
+            return response()->json(['message' => 'No fue posible crear la preferencia de pago.'], 502);
+        }
 
         return response()->json([
             'data' => [
@@ -79,6 +87,9 @@ class PaymentController extends Controller
                 'total' => (float) $order->total + (float) $order->totEnvio,
                 'public_key' => $acc->publicKey,
                 'store_name' => $store->extra->nombreTienda ?? $store->serial,
+                'preference_id' => $preference['preference_id'],
+                'init_point' => $preference['init_point'],
+                'sandbox_init_point' => $preference['sandbox_init_point'],
             ],
             'message' => 'Preferencia de pago creada.',
         ]);
@@ -139,19 +150,24 @@ class PaymentController extends Controller
                 return response()->json(['status' => 'ignored']);
             }
 
-            DB::transaction(function () use ($order, $orderReference) {
+            DB::transaction(function () use ($order, $orderReference, $paymentId) {
                 $payment = MercadoPagoPayment::where('orderP', $orderReference)->lockForUpdate()->first();
                 if (! $payment || (int) $payment->status === 1) {
                     return;
                 }
 
-                $payment->update(['status' => '1', 'fecha' => now()->format('Y-m-d H:i:s')]);
+                $payment->update([
+                    'status' => '1',
+                    'payment_id' => (int) $paymentId,
+                    'fecha' => now()->format('Y-m-d H:i:s'),
+                ]);
                 $order->cartItems()
                     ->where('variation', $order->serial)
                     ->where('status', '!=', '3')
                     ->update(['status' => '3']);
+                $order->update(['order_state' => PurchaseOrder::STATE_PAID]);
             });
-        } catch (\Throwable $exception) {
+        } catch (Throwable $exception) {
             Log::error('MercadoPago webhook verification failed.', [
                 'payment_id' => (string) $paymentId,
                 'exception' => $exception,

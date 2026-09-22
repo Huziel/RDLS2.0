@@ -155,6 +155,7 @@ class Checkout
                 'date' => now()->format('Y-m-d'),
                 'checkout_key' => $checkoutKey,
                 'loyalty_discount' => $loyaltyDiscount,
+                'order_state' => PurchaseOrder::STATE_PENDING,
             ]);
 
             if (! empty($shippingAddress['direccion'])) {

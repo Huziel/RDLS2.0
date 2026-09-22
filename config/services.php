@@ -41,6 +41,9 @@ return [
 
     'mercadopago' => [
         'webhook_secret' => env('MERCADOPAGO_WEBHOOK_SECRET', ''),
+        'base_url' => env('MERCADOPAGO_API_BASE_URL', 'https://api.mercadopago.com'),
+        'notification_url' => env('MERCADOPAGO_NOTIFICATION_URL', ''),
+        'frontend_url' => env('FRONTEND_URL', ''),
     ],
 
 ];
