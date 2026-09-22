@@ -142,5 +142,42 @@ trait InteractsWithSalesSchema
             $table->unsignedBigInteger('payment_id')->nullable();
             $table->unique('orderP');
         });
+
+        Schema::create('subscription_plans', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->decimal('price_percent', 5, 2)->default(5.00);
+            $table->integer('max_products')->nullable();
+            $table->json('modules')->nullable();
+            $table->boolean('is_default')->default(false);
+            $table->boolean('active')->default(true);
+            $table->timestamps();
+        });
+
+        Schema::create('store_subscriptions', function (Blueprint $table) {
+            $table->id();
+            $table->integer('store_id')->index();
+            $table->foreignId('subscription_plan_id')->constrained('subscription_plans')->cascadeOnDelete();
+            $table->decimal('monthly_sales', 12, 2)->default(0);
+            $table->decimal('amount_due', 12, 2)->default(0);
+            $table->string('status')->default('active');
+            $table->timestamp('starts_at')->nullable();
+            $table->timestamp('ends_at')->nullable();
+            $table->timestamp('last_payment_at')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('subscription_payments', function (Blueprint $table) {
+            $table->id();
+            $table->integer('store_id')->index();
+            $table->foreignId('store_subscription_id')->constrained('store_subscriptions')->cascadeOnDelete();
+            $table->decimal('monthly_sales', 12, 2)->default(0);
+            $table->decimal('percent', 5, 2);
+            $table->decimal('amount', 12, 2);
+            $table->string('period');
+            $table->string('status')->default('pending');
+            $table->timestamp('paid_at')->nullable();
+            $table->timestamps();
+        });
     }
 }

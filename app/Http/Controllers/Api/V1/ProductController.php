@@ -70,12 +70,13 @@ class ProductController extends Controller
                 $validated['codigo_barras'] = (string) $validated['codigo_barras'];
             }
 
-            $product = DB::transaction(function () use ($store, $validated) {
+            $product = DB::transaction(function () use ($user, $store, $validated) {
                 Store::whereKey($store->id)->lockForUpdate()->firstOrFail();
                 $subscription = StoreSubscription::getOrCreateDefault($store->id);
                 $maxProducts = $subscription->plan->max_products;
 
                 if ($maxProducts !== null
+                    && ! $user->hasRole('super-admin')
                     && Product::byStore($store->createdby)->count() >= $maxProducts) {
                     return null;
                 }
