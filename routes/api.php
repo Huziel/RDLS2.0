@@ -106,9 +106,9 @@ Route::prefix('v1')->group(function () {
 
         // Products
         Route::get('products/search-barcode', [ProductController::class, 'searchByBarcode'])
-            ->middleware('role_or_permission:super-admin|products.read');
+            ->middleware('role_or_permission:super-admin|products.read|pos.use');
         Route::apiResource('products', ProductController::class)
-            ->middlewareFor(['index', 'show'], 'role_or_permission:super-admin|products.read')
+            ->middlewareFor(['index', 'show'], 'role_or_permission:super-admin|products.read|pos.use')
             ->middlewareFor('store', 'role_or_permission:super-admin|products.create')
             ->middlewareFor('update', 'role_or_permission:super-admin|products.update')
             ->middlewareFor('destroy', 'role_or_permission:super-admin|products.delete');
@@ -296,10 +296,6 @@ Route::prefix('v1')->group(function () {
 
     // Public order detail (session-based, for thank-you page)
     Route::get('public/orders/{id}', [OrderController::class, 'publicOrderDetail']);
-
-    // Public loyalty (check points + redeem)
-    Route::post('loyalty/check', [LoyaltyController::class, 'clientPoints']);
-    Route::post('loyalty/redeem', [LoyaltyController::class, 'redeem']);
 
     // Public chat (customer)
     Route::post('chat/start', [ChatController::class, 'customerConversation']);

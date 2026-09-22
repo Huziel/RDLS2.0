@@ -2,6 +2,8 @@
 
 Documento tecnico de FASE 3. Cada hallazgo se clasifica como:
 
+> Estado posterior: FASE 4 implemento el consumo de inventario online, locks de lealtad y las vistas POS descritas como pendientes en este documento. Ver `docs/pos-checkout-loyalty-reconstruction.md` para el contrato vigente.
+
 - `CONFIRMADO`: existe evidencia directa en Laravel, la base remota o el bundle historico.
 - `INFERIDO`: consecuencia consistente con la evidencia, sin contrato explicito suficiente.
 - `NO CONFIRMADO`: concepto buscado sin evidencia para reconstruirlo.

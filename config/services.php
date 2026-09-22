@@ -39,4 +39,8 @@ return [
         'api_key' => env('DEEPSEEK_API_KEY', ''),
     ],
 
+    'mercadopago' => [
+        'webhook_secret' => env('MERCADOPAGO_WEBHOOK_SECRET', ''),
+    ],
+
 ];

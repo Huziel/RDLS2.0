@@ -203,10 +203,16 @@ class ProductController extends Controller
                 ]);
 
                 if (array_key_exists('stock', $validated)) {
-                    ProductStock::updateOrCreate(
-                        ['idProd' => $product->id],
-                        ['stock' => $validated['stock'], 'typesd' => null],
-                    );
+                    $stock = ProductStock::where('idProd', $product->id)->lockForUpdate()->first();
+                    if ($stock) {
+                        $stock->update(['stock' => $validated['stock'], 'typesd' => null]);
+                    } else {
+                        ProductStock::create([
+                            'idProd' => $product->id,
+                            'stock' => $validated['stock'],
+                            'typesd' => null,
+                        ]);
+                    }
                 }
 
                 if (array_key_exists('codigo_barras', $validated)) {

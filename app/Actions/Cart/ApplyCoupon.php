@@ -4,6 +4,7 @@ namespace App\Actions\Cart;
 
 use App\Models\Cart;
 use App\Models\Coupon;
+use App\Models\Store;
 use Illuminate\Support\Facades\DB;
 
 class ApplyCoupon
@@ -11,8 +12,8 @@ class ApplyCoupon
     public function __invoke(string $code, string $sessionId, string $storeSerial): array
     {
         return DB::transaction(function () use ($code, $sessionId, $storeSerial) {
-            $coupon = Coupon::with('products')->where('codeC', $code)->firstOrFail();
-            $store = \App\Models\Store::where('serial', $storeSerial)->firstOrFail();
+            $coupon = Coupon::with('products')->where('codeC', $code)->lockForUpdate()->firstOrFail();
+            $store = Store::where('serial', $storeSerial)->firstOrFail();
 
             if ($coupon->idTienda != $store->id) {
                 throw new \Exception('Este cupón no pertenece a esta tienda.');
@@ -22,7 +23,12 @@ class ApplyCoupon
                 throw new \Exception('El cupón expiró o no está vigente.');
             }
 
-            $cartItems = Cart::active()->byUser($sessionId)->byStore($storeSerial)->get();
+            $cartItems = Cart::active()
+                ->byUser($sessionId)
+                ->byStore($storeSerial)
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
 
             if ($cartItems->isEmpty()) {
                 throw new \Exception('No hay productos en el carrito.');

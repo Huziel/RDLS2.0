@@ -12,6 +12,7 @@ class PurchaseOrder extends Model
 
     protected $fillable = [
         'order', 'tel', 'serial', 'session', 'lat', 'long', 'total', 'totEnvio', 'nombre', 'date',
+        'checkout_key', 'loyalty_discount',
     ];
 
     public function store()

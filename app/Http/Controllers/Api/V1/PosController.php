@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Actions\Inventory\ConsumeInventory;
 use App\Http\Controllers\Controller;
 use App\Models\Client;
 use App\Models\LoyaltyConfig;
@@ -11,7 +12,6 @@ use App\Models\PosOrderDetail;
 use App\Models\PosOrderDetailHistory;
 use App\Models\PosOrderHistory;
 use App\Models\Product;
-use App\Models\ProductStock;
 use App\Models\Store;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
@@ -20,6 +20,8 @@ use Illuminate\Validation\ValidationException;
 
 class PosController extends Controller
 {
+    public function __construct(private readonly ConsumeInventory $consumeInventory) {}
+
     public function activeOrders(Request $request)
     {
         $user = $request->user();
@@ -210,15 +212,31 @@ class PosController extends Controller
 
         $validated = $request->validate([
             'tipo_pago' => ['required', 'string', 'in:efectivo,tarjeta,transferencia'],
+            'loyalty_points' => ['nullable', 'integer', 'min:0'],
         ]);
 
         $paymentTypeMap = ['efectivo' => 1, 'tarjeta' => 2, 'transferencia' => 3];
 
-        $order = DB::transaction(function () use ($orderId, $validated, $store, $paymentTypeMap) {
+        $result = DB::transaction(function () use ($orderId, $validated, $store, $paymentTypeMap) {
             $order = PosOrder::where('creator', $store->createdby)
-                ->where('estado', 1)
                 ->lockForUpdate()
                 ->findOrFail($orderId);
+
+            if ((int) $order->estado === 2) {
+                $history = PosOrderHistory::where('creator', $store->createdby)
+                    ->where('noOrder', $order->noOrder)
+                    ->with('details')
+                    ->firstOrFail();
+
+                return ['history' => $history, 'idempotent' => true];
+            }
+
+            if ((int) $order->estado !== 1) {
+                throw ValidationException::withMessages([
+                    'order' => ['La orden debe guardarse antes de cobrar.'],
+                ]);
+            }
+
             $details = PosOrderDetail::where('idPventaGeneral', $order->id)->get();
 
             if ($details->isEmpty()) {
@@ -229,33 +247,24 @@ class PosController extends Controller
 
             $quantities = $details->groupBy('productoId')
                 ->map(fn ($items) => (float) $items->sum('cantidad'));
-            $products = Product::byStore($store->createdby)
-                ->active()
-                ->whereIn('id', $quantities->keys())
-                ->get()
-                ->keyBy('id');
+            ($this->consumeInventory)($store->createdby, $quantities);
 
-            if ($products->count() !== $quantities->count()) {
-                throw ValidationException::withMessages([
-                    'stock' => ['La orden contiene productos inactivos o ajenos a la tienda.'],
-                ]);
-            }
-
-            $stocks = ProductStock::whereIn('idProd', $quantities->keys())
-                ->orderBy('idProd')
-                ->lockForUpdate()
-                ->get()
-                ->keyBy('idProd');
-
-            foreach ($quantities as $productId => $quantity) {
-                $stock = $stocks->get($productId);
-                if (! $stock || (float) $stock->stock < $quantity) {
-                    $productName = $products->get($productId)?->keyy ?? "#{$productId}";
-                    throw ValidationException::withMessages([
-                        'stock' => ["Stock insuficiente para {$productName}."],
-                    ]);
-                }
-            }
+            $subtotal = (float) $details->sum(
+                fn (PosOrderDetail $detail) => (float) $detail->precioBruto * (float) $detail->cantidad
+            );
+            $discount = $this->redeemPosLoyalty(
+                $store,
+                $order,
+                (int) ($validated['loyalty_points'] ?? 0),
+                $subtotal + (float) $order->extra,
+            );
+            $total = max(0, $subtotal + (float) $order->extra - $discount);
+            $paymentType = $paymentTypeMap[$validated['tipo_pago']];
+            $order->update([
+                'total' => $total,
+                'descuento' => $discount,
+                'tipoPago' => $paymentType,
+            ]);
 
             $history = PosOrderHistory::create([
                 'noOrder' => $order->noOrder,
@@ -266,7 +275,7 @@ class PosController extends Controller
                 'total' => $order->total,
                 'extra' => $order->extra,
                 'descuento' => $order->descuento,
-                'tipoPago' => $paymentTypeMap[$validated['tipo_pago']],
+                'tipoPago' => $paymentType,
                 'creator' => $store->createdby,
             ]);
 
@@ -282,20 +291,17 @@ class PosController extends Controller
 
             }
 
-            foreach ($quantities as $productId => $quantity) {
-                $stock = $stocks->get($productId);
-                $stock->update(['stock' => (float) $stock->stock - $quantity]);
-            }
+            $order->update(['estado' => 2]);
+            $this->earnPosLoyaltyPoints($order, $store);
 
-            $order->update(['estado' => 2, 'tipoPago' => $paymentTypeMap[$validated['tipo_pago']]]);
-
-            return $order;
+            return ['history' => $history->load('details'), 'idempotent' => false];
         });
 
-        // Earn loyalty points
-        $this->earnPosLoyaltyPoints($order, $store);
-
-        return response()->json(['message' => 'Orden pagada exitosamente.']);
+        return response()->json([
+            'data' => $result['history'],
+            'idempotent' => $result['idempotent'],
+            'message' => $result['idempotent'] ? 'La orden ya estaba pagada.' : 'Orden pagada exitosamente.',
+        ]);
     }
 
     public function history(Request $request)
@@ -303,12 +309,46 @@ class PosController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        $orders = PosOrderHistory::where('creator', $store->createdby)
+        $validated = $request->validate([
+            'from' => ['nullable', 'date_format:Y-m-d'],
+            'to' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:from'],
+            'payment' => ['nullable', 'string', 'in:efectivo,tarjeta,transferencia'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
+        $paymentTypeMap = ['efectivo' => 1, 'tarjeta' => 2, 'transferencia' => 3];
+
+        $query = PosOrderHistory::where('creator', $store->createdby)
+            ->when($validated['from'] ?? null, fn ($query, $from) => $query->whereDate('fecha', '>=', $from))
+            ->when($validated['to'] ?? null, fn ($query, $to) => $query->whereDate('fecha', '<=', $to))
+            ->when(
+                $validated['payment'] ?? null,
+                fn ($query, $payment) => $query->where('tipoPago', $paymentTypeMap[$payment]),
+            );
+
+        $stats = (clone $query)->selectRaw(
+            'COUNT(*) as sales_count, COALESCE(SUM(total), 0) as total, '
+            .'COALESCE(AVG(total), 0) as average, '
+            .'SUM(CASE WHEN tipoPago = 1 THEN 1 ELSE 0 END) as cash, '
+            .'SUM(CASE WHEN tipoPago = 2 THEN 1 ELSE 0 END) as card, '
+            .'SUM(CASE WHEN tipoPago = 3 THEN 1 ELSE 0 END) as transfer'
+        )->first();
+
+        $orders = $query
             ->with('details')
             ->orderByDesc('id')
-            ->paginate($request->get('per_page', 20));
+            ->paginate($validated['per_page'] ?? 20);
 
-        return response()->json($orders);
+        return response()->json([
+            ...$orders->toArray(),
+            'stats' => [
+                'count' => (int) $stats->sales_count,
+                'total' => (float) $stats->total,
+                'average' => (float) $stats->average,
+                'cash' => (int) $stats->cash,
+                'card' => (int) $stats->card,
+                'transfer' => (int) $stats->transfer,
+            ],
+        ]);
     }
 
     public function ticket($noOrder)
@@ -360,6 +400,7 @@ class PosController extends Controller
         $request->validate([
             'client_id' => 'required|integer',
             'points' => 'required|integer|min:1',
+            'idempotency_key' => 'required|string|max:100',
         ]);
 
         $config = LoyaltyConfig::getConfig($store->id);
@@ -367,16 +408,31 @@ class PosController extends Controller
             return response()->json(['message' => 'Programa de lealtad no disponible.'], 422);
         }
 
-        $balance = LoyaltyPoint::getBalance($store->id, $request->client_id);
-        if ($balance < $request->points) {
-            return response()->json(['message' => 'Puntos insuficientes.'], 422);
+        $client = Client::where('store_id', $store->id)->find($request->client_id);
+        if (! $client) {
+            return response()->json(['message' => 'Cliente no encontrado.'], 404);
         }
         if ($request->points < $config->minimum_points_to_redeem) {
             return response()->json(['message' => "Minimo {$config->minimum_points_to_redeem} puntos para canjear."], 422);
         }
+        if ($config->pesos_per_point <= 0) {
+            return response()->json(['message' => 'Configuracion de lealtad invalida.'], 422);
+        }
+        if ($request->points % $config->pesos_per_point !== 0) {
+            return response()->json(['message' => "Los puntos deben ser multiplo de {$config->pesos_per_point}."], 422);
+        }
 
         $discount = floor($request->points / $config->pesos_per_point);
-        LoyaltyPoint::redeemPoints($store->id, $request->client_id, $request->points, 'pos');
+        $redeemed = LoyaltyPoint::redeemPoints(
+            $store->id,
+            $client->id,
+            $request->points,
+            'pos:'.$request->idempotency_key,
+            'pos_redeem',
+        );
+        if (! $redeemed) {
+            return response()->json(['message' => 'Puntos insuficientes.'], 422);
+        }
 
         return response()->json(['data' => [
             'points_redeemed' => $request->points,
@@ -385,27 +441,67 @@ class PosController extends Controller
         ]]);
     }
 
-    private function earnPosLoyaltyPoints($order, $store)
+    private function redeemPosLoyalty(Store $store, PosOrder $order, int $points, float $maximumDiscount): float
     {
-        try {
-            if (! $order->telefono) {
-                return;
-            }
-            $config = LoyaltyConfig::getConfig($store->id);
-            if (! $config->enabled) {
-                return;
-            }
+        if ($points === 0) {
+            return 0;
+        }
+        if (! $order->telefono) {
+            throw ValidationException::withMessages(['loyalty_points' => ['La orden no tiene telefono de cliente.']]);
+        }
 
-            $client = Client::where('store_id', $store->id)->where('phone', $order->telefono)->first();
-            if (! $client) {
-                return;
-            }
+        $config = LoyaltyConfig::getConfig($store->id);
+        $client = Client::where('store_id', $store->id)->where('phone', $order->telefono)->first();
+        if (! $config->enabled || ! $client || $config->pesos_per_point <= 0) {
+            throw ValidationException::withMessages(['loyalty_points' => ['No es posible canjear puntos para este cliente.']]);
+        }
+        if ($points < $config->minimum_points_to_redeem) {
+            throw ValidationException::withMessages([
+                'loyalty_points' => ["Minimo {$config->minimum_points_to_redeem} puntos para canjear."],
+            ]);
+        }
+        if ($points % $config->pesos_per_point !== 0) {
+            throw ValidationException::withMessages([
+                'loyalty_points' => ["Los puntos deben ser multiplo de {$config->pesos_per_point}."],
+            ]);
+        }
 
-            $points = (int) floor($order->total * $config->points_per_peso);
-            if ($points > 0) {
-                LoyaltyPoint::addPoints($store->id, $client->id, $points, 'earn', "Venta POS {$order->noOrder}", $order->noOrder);
-            }
-        } catch (\Exception $e) {
+        $discount = (float) floor($points / $config->pesos_per_point);
+        if ($discount <= 0 || $discount > $maximumDiscount) {
+            throw ValidationException::withMessages(['loyalty_points' => ['El canje excede el total de la orden.']]);
+        }
+        if (! LoyaltyPoint::redeemPoints($store->id, $client->id, $points, $order->noOrder, 'pos_redeem')) {
+            throw ValidationException::withMessages(['loyalty_points' => ['Puntos insuficientes.']]);
+        }
+
+        return $discount;
+    }
+
+    private function earnPosLoyaltyPoints(PosOrder $order, Store $store): void
+    {
+        if (! $order->telefono) {
+            return;
+        }
+        $config = LoyaltyConfig::getConfig($store->id);
+        if (! $config->enabled || $config->points_per_peso <= 0) {
+            return;
+        }
+
+        $client = Client::where('store_id', $store->id)->where('phone', $order->telefono)->first();
+        if (! $client) {
+            return;
+        }
+
+        $points = (int) floor($order->total * $config->points_per_peso);
+        if ($points > 0) {
+            LoyaltyPoint::addPoints(
+                $store->id,
+                $client->id,
+                $points,
+                'pos_earn',
+                "Venta POS {$order->noOrder}",
+                $order->noOrder,
+            );
         }
     }
 }

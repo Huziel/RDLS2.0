@@ -32,6 +32,10 @@ trait InteractsWithInventorySchema
             $table->string('serial')->unique();
             $table->string('createdby')->unique();
             $table->string('logo')->nullable();
+            $table->string('color')->nullable();
+            $table->string('lat')->nullable();
+            $table->string('long')->nullable();
+            $table->string('adress')->nullable();
         });
 
         Schema::create('data', function (Blueprint $table) {

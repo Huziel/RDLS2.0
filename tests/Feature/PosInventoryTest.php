@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\PosOrder;
 use App\Models\PosOrderDetail;
+use App\Models\PosOrderHistory;
 use Tests\Support\InteractsWithInventorySchema;
 use Tests\TestCase;
 
@@ -89,7 +90,8 @@ class PosInventoryTest extends TestCase
         $this->assertDatabaseCount('pventageneraldetallehisto', 1);
 
         $this->postJson("/api/v1/pos/orders/{$order->id}/pay", ['tipo_pago' => 'tarjeta'])
-            ->assertNotFound();
+            ->assertOk()
+            ->assertJsonPath('idempotent', true);
         $this->assertDatabaseHas('stock', ['idProd' => $product->id, 'stock' => 3]);
         $this->assertDatabaseCount('pventageneralhisto', 1);
     }
@@ -111,6 +113,64 @@ class PosInventoryTest extends TestCase
 
         $this->getJson('/api/v1/pos/orders')->assertOk();
         $this->getJson('/api/v1/pos/history')->assertForbidden();
+    }
+
+    public function test_pos_use_can_read_the_catalog_without_product_administration_permission(): void
+    {
+        [, $store] = $this->signInStore('pos-catalog@example.test', ['pos.use']);
+        $product = $this->createProduct($store->createdby, ['keyy' => 'Producto POS'], 3);
+
+        $this->getJson('/api/v1/products')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $product->id)
+            ->assertJsonPath('data.0.stock', 3);
+    }
+
+    public function test_pos_history_filters_by_date_payment_and_store(): void
+    {
+        [, $store] = $this->signInStore('history@example.test', ['pos.history']);
+        PosOrderHistory::create([
+            'noOrder' => 'cash-in-range',
+            'nombre' => 'Cliente',
+            'fecha' => '2026-09-10 10:00:00',
+            'estado' => 2,
+            'total' => 30,
+            'extra' => 0,
+            'descuento' => 0,
+            'tipoPago' => 1,
+            'creator' => $store->createdby,
+        ]);
+        PosOrderHistory::create([
+            'noOrder' => 'card-in-range',
+            'nombre' => 'Cliente',
+            'fecha' => '2026-09-11 10:00:00',
+            'estado' => 2,
+            'total' => 50,
+            'extra' => 0,
+            'descuento' => 0,
+            'tipoPago' => 2,
+            'creator' => $store->createdby,
+        ]);
+        PosOrderHistory::create([
+            'noOrder' => 'foreign',
+            'nombre' => 'Ajeno',
+            'fecha' => '2026-09-10 10:00:00',
+            'estado' => 2,
+            'total' => 1000,
+            'extra' => 0,
+            'descuento' => 0,
+            'tipoPago' => 1,
+            'creator' => 'foreign@example.test',
+        ]);
+
+        $this->getJson('/api/v1/pos/history?from=2026-09-10&to=2026-09-10&payment=efectivo')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.noOrder', 'cash-in-range')
+            ->assertJsonPath('stats.count', 1)
+            ->assertJsonPath('stats.total', 30)
+            ->assertJsonPath('stats.cash', 1)
+            ->assertJsonPath('stats.card', 0);
     }
 
     private function createOrder(string $owner, int $state): PosOrder

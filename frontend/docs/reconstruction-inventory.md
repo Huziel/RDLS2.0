@@ -26,15 +26,17 @@ El listado completo se conserva en `src/router/index.js`; los módulos todavía 
 - FASE 1: infraestructura, autenticación, layouts y dashboard completados.
 - FASE 2: Productos completado en listado, alta, edición, eliminación, imágenes, categorías y extras.
 - FASE 3: inventario/stock/categorías auditados y estabilizados en código; no existía módulo independiente de Inventario y el despliegue a producción sigue pendiente.
+- FASE 4: POS e historial reconstruidos; checkout online, inventario, lealtad y webhook de pagos endurecidos en código. Migraciones todavía pendientes de producción.
 - Evidencia y contrato de Productos: `docs/products-reconstruction.md`.
 - Evidencia y contrato de stock/POS: `docs/inventory-reconstruction.md`.
+- Contrato de POS, checkout, lealtad y seguridad de base: `docs/pos-checkout-loyalty-reconstruction.md`.
 
 ## Orden recomendado
 
 1. Autenticación y dashboard base.
 2. Productos, carga de imágenes y categorías. Completado.
 3. Inventario, stock y categorías. Código completado sin inventar un módulo inexistente; migraciones pendientes de despliegue.
-4. POS e historial. Recomendado para FASE 4.
+4. POS e historial. Completado en FASE 4.
 5. Pedidos y cargos adicionales.
 6. Tienda pública, carrito y checkout.
 7. Configuración, constructor y onboarding.
@@ -45,9 +47,8 @@ El listado completo se conserva en `src/router/index.js`; los módulos todavía 
 
 - Las rutas API desconocidas actualmente pueden devolver el HTML del SPA con estado 200.
 - Varios endpoints protegidos no aplican middleware de rol o permiso.
-- El detalle de pedidos no siempre valida pertenencia a la tienda.
-- El detalle público de pedidos no valida el `cart_token`.
-- POS ya restringe producto y pago a la tienda autenticada y evita stock negativo; el carrito restringe producto/extras activos, pero online todavía no reserva ni descuenta stock.
+- El detalle administrativo y la confirmación de pedidos validan pertenencia a la tienda; el detalle público exige `cart_token`.
+- POS y checkout online consumen inventario con el mismo lock transaccional; checkout descuenta al crear la orden.
 - La respuesta administrativa de ajustes incluye la contraseña SMTP.
 - Productos alimenta POS, catálogo público, cupones, QR y apartados; varios de esos consumidores no validan tenant o stock en backend.
 
@@ -66,3 +67,5 @@ Estos problemas deben corregirse en backend; ocultar botones en Vue no constituy
 - Pago POS bloquea orden/saldos, valida disponibilidad y descuenta dentro de una sola transacción.
 - POS aplica los permisos existentes `pos.use` y `pos.history`; no se inventaron permisos de Inventario.
 - Categorías siguen siendo strings distinct por tienda, sin entidad o CRUD artificial.
+- Lealtad usa locks y referencias idempotentes; POS y checkout mueven puntos dentro de la transacción de venta.
+- Los comandos destructivos de Artisan están bloqueados globalmente y producción no permite override.

@@ -6,6 +6,7 @@ use App\Models\Cart;
 use App\Models\CartAddon;
 use App\Models\Product;
 use App\Models\ProductAddon;
+use App\Models\ProductStock;
 use App\Models\Store;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -16,22 +17,30 @@ class AddToCart
     {
         return DB::transaction(function () use ($sessionId, $storeSerial, $productId, $quantity, $selectedAddonIds) {
             $store = Store::where('serial', $storeSerial)->firstOrFail();
-            $product = Product::byStore($store->createdby)->active()->findOrFail($productId);
 
-            // Check if same product (without addons) is already in cart
             $existing = Cart::active()
                 ->byUser($sessionId)
                 ->byStore($storeSerial)
                 ->where('product', $productId)
                 ->whereDoesntHave('addons')
+                ->lockForUpdate()
                 ->first();
+            $product = Product::byStore($store->createdby)->active()->lockForUpdate()->findOrFail($productId);
+            $stock = ProductStock::where('idProd', $product->id)->lockForUpdate()->first();
 
             if ($existing && empty($selectedAddonIds)) {
                 $newQty = $existing->cant + $quantity;
+                if (! $stock || (float) $stock->stock < $newQty) {
+                    throw ValidationException::withMessages(['quantity' => ['Stock insuficiente.']]);
+                }
                 $newPrice = ($product->number * $newQty);
                 $existing->update(['cant' => $newQty, 'price' => $newPrice]);
 
                 return $existing;
+            }
+
+            if (! $stock || (float) $stock->stock < $quantity) {
+                throw ValidationException::withMessages(['quantity' => ['Stock insuficiente.']]);
             }
 
             // Calculate price with addons

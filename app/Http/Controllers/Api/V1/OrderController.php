@@ -5,15 +5,19 @@ namespace App\Http\Controllers\Api\V1;
 use App\Actions\Order\Checkout;
 use App\Http\Controllers\Controller;
 use App\Models\Cart;
+use App\Models\ExtraCharge;
 use App\Models\PurchaseOrder;
+use App\Models\ShippingOrder;
 use App\Models\Store;
-use App\Models\User;
-use App\Models\Client;
-use App\Models\LoyaltyConfig;
-use App\Models\LoyaltyPoint;
 use App\Models\StoreSubscription;
+use App\Models\User;
+use App\Models\VerificationCode;
 use App\Services\MailService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class OrderController extends Controller
 {
@@ -23,24 +27,23 @@ class OrderController extends Controller
         $request->validate([
             'nombre' => ['required', 'string'],
             'telefono' => ['required', 'string'],
-            'lat' => ['nullable', 'numeric'],
-            'lng' => ['nullable', 'numeric'],
+            'lat' => ['nullable', 'numeric', 'between:-90,90'],
+            'lng' => ['nullable', 'numeric', 'between:-180,180'],
             'costo_envio' => ['nullable', 'numeric', 'min:0'],
-            'direccion' => ['nullable', 'string'],
+            'direccion' => ['nullable', 'string', 'required_if:tipo_envio,shipping,national'],
             'ciudad' => ['nullable', 'string'],
             'codigo_postal' => ['nullable', 'string'],
-            'loyalty_points' => ['nullable', 'integer', 'min:0'],
+            'loyalty_points' => ['prohibited'],
+            'tipo_envio' => ['nullable', 'string', 'in:pickup,shipping,national'],
         ]);
 
         $cartId = $request->header('X-Cart-Token') ?? $request->session()->getId();
-        $loyaltyDiscount = 0;
+        $idempotencyKey = $request->header('Idempotency-Key');
+        if ($idempotencyKey !== null && (strlen($idempotencyKey) > 100 || trim($idempotencyKey) === '')) {
+            throw ValidationException::withMessages(['idempotency_key' => ['La clave de idempotencia no es valida.']]);
+        }
 
         try {
-            // Redeem loyalty points before checkout
-            if ($request->filled('loyalty_points') && $request->loyalty_points > 0) {
-                $loyaltyDiscount = $this->redeemLoyaltyForCheckout($storeSerial, $request->telefono, $request->loyalty_points);
-            }
-
             $order = app(Checkout::class)(
                 $cartId,
                 $storeSerial,
@@ -50,17 +53,15 @@ class OrderController extends Controller
                 $request->lng,
                 $request->costo_envio,
                 $request->only(['direccion', 'ciudad', 'codigo_postal']),
-                $loyaltyDiscount
+                0,
+                $idempotencyKey,
+                $request->tipo_envio,
             );
 
-            // Notify store owner via email
-            $this->notifyStoreOwner($order, $storeSerial);
-
-            // Auto-earn loyalty points for the customer
-            $this->earnLoyaltyPoints($order, $storeSerial, $request->telefono);
-
-            // Track sale for subscription
-            $this->trackSubscriptionSale($storeSerial, $order->total);
+            if ($order->wasRecentlyCreated) {
+                $this->notifyStoreOwner($order, $storeSerial);
+                $this->trackSubscriptionSale($storeSerial, $order->total);
+            }
 
             return response()->json([
                 'data' => [
@@ -68,12 +69,17 @@ class OrderController extends Controller
                     'id' => $order->id,
                     'total' => (float) $order->total,
                     'shipping' => (float) $order->totEnvio,
-                    'loyalty_discount' => $loyaltyDiscount,
+                    'loyalty_discount' => (float) $order->loyalty_discount,
+                    'idempotent' => ! $order->wasRecentlyCreated,
                 ],
-                'message' => 'Orden creada exitosamente.',
-            ], 201);
-        } catch (\Exception $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+                'message' => $order->wasRecentlyCreated ? 'Orden creada exitosamente.' : 'Orden recuperada.',
+            ], $order->wasRecentlyCreated ? 201 : 200);
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            Log::error('Online checkout failed', ['exception' => $exception]);
+
+            return response()->json(['message' => 'No fue posible crear la orden.'], 500);
         }
     }
 
@@ -85,10 +91,10 @@ class OrderController extends Controller
 
         $orders = PurchaseOrder::with(['cartItems.productData', 'shippingForm', 'shippingOrder.deliver'])
             ->where('serial', $store->serial)
-            ->when($request->search, fn($q) => $q->where(function($q) use ($request) {
+            ->when($request->search, fn ($q) => $q->where(function ($q) use ($request) {
                 $q->where('order', 'like', "%{$request->search}%")
-                  ->orWhere('nombre', 'like', "%{$request->search}%")
-                  ->orWhere('tel', 'like', "%{$request->search}%");
+                    ->orWhere('nombre', 'like', "%{$request->search}%")
+                    ->orWhere('tel', 'like', "%{$request->search}%");
             }))
             ->orderByDesc('id')
             ->paginate($request->get('per_page', 20));
@@ -96,6 +102,7 @@ class OrderController extends Controller
         $result = $orders->through(function ($order) {
             $cartStatuses = $order->cartItems->pluck('status')->unique()->toArray();
             $shipping = $order->shippingOrder;
+
             return [
                 'id' => $order->id,
                 'order' => $order->order,
@@ -110,7 +117,7 @@ class OrderController extends Controller
                 'delivery_status' => $shipping ? [
                     'id' => $shipping->id,
                     'status' => $shipping->status,
-                    'status_label' => ['0'=>'Pendiente repartidor','1'=>'En camino','2'=>'En proceso','3'=>'Entregado'][$shipping->status] ?? $shipping->status,
+                    'status_label' => ['0' => 'Pendiente repartidor', '1' => 'En camino', '2' => 'En proceso', '3' => 'Entregado'][$shipping->status] ?? $shipping->status,
                     'delivery_id' => $shipping->delivery,
                     'delivery_name' => $shipping->deliver->name ?? null,
                 ] : null,
@@ -120,7 +127,7 @@ class OrderController extends Controller
                     'ciudad' => $order->shippingForm->ciudad,
                 ] : null,
                 'items_count' => $order->cartItems->count(),
-                'items' => $order->cartItems->map(fn($i) => [
+                'items' => $order->cartItems->map(fn ($i) => [
                     'id' => $i->id,
                     'name' => $i->productData->keyy ?? '',
                     'image' => $i->productData->link ?? null,
@@ -141,31 +148,33 @@ class OrderController extends Controller
         ]);
     }
 
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $order = PurchaseOrder::with(['cartItems' => fn($q) => $q->with('productData'), 'shippingForm', 'extraCharges'])
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
+        $order = PurchaseOrder::with(['cartItems' => fn ($q) => $q->with('productData'), 'shippingForm', 'extraCharges'])
+            ->where('serial', $store->serial)
             ->findOrFail($id);
 
         // Re-fetch items with proper product data and addons
-        $items = \App\Models\Cart::where('orderC', $order->order)
+        $items = Cart::where('orderC', $order->order)
             ->with(['productData', 'addons.addon'])
             ->get()
-            ->map(fn($i) => [
-                'name' => $i->productData->keyy ?? 'Producto #' . $i->product,
+            ->map(fn ($i) => [
+                'name' => $i->productData->keyy ?? 'Producto #'.$i->product,
                 'image' => $i->productData->link ?? null,
                 'qty' => $i->cant,
                 'price' => (float) $i->price,
-                'addons' => $i->addons->map(fn($a) => [
+                'addons' => $i->addons->map(fn ($a) => [
                     'name' => $a->addon->nombre ?? '',
                     'price' => (float) ($a->addon->precio ?? 0),
                 ]),
             ]);
 
         // Check for active shipping and verification code
-        $shippingOrder = \App\Models\ShippingOrder::with('deliver')->where('ordenCompra', $order->id)->first();
+        $shippingOrder = ShippingOrder::with('deliver')->where('ordenCompra', $order->id)->first();
         $verificationCode = null;
         if ($shippingOrder && in_array($shippingOrder->status, ['1', '2'])) {
-            $verificationCode = \App\Models\VerificationCode::where('orderC', $order->order)->value('code');
+            $verificationCode = VerificationCode::where('orderC', $order->order)->value('code');
         }
 
         return response()->json([
@@ -183,7 +192,7 @@ class OrderController extends Controller
                 'verification_code' => $verificationCode,
                 'shipping_status' => $shippingOrder ? [
                     'status' => $shippingOrder->status,
-                    'status_label' => ['0'=>'Pendiente','1'=>'En camino','2'=>'En proceso','3'=>'Entregado'][$shippingOrder->status] ?? 'Desconocido',
+                    'status_label' => ['0' => 'Pendiente', '1' => 'En camino', '2' => 'En proceso', '3' => 'Entregado'][$shippingOrder->status] ?? 'Desconocido',
                     'delivery_name' => $shippingOrder->deliver->name ?? null,
                 ] : null,
                 'shipping' => $order->shippingForm ? [
@@ -193,7 +202,7 @@ class OrderController extends Controller
                     'codigo_postal' => $order->shippingForm->codigoPostal,
                     'pais' => $order->shippingForm->pais,
                 ] : null,
-                'extra_charges' => $order->extraCharges->map(fn($e) => [
+                'extra_charges' => $order->extraCharges->map(fn ($e) => [
                     'precio' => (float) $e->precio,
                     'tipo' => $e->tipoCargo,
                 ]),
@@ -205,10 +214,14 @@ class OrderController extends Controller
     {
         try {
             $store = Store::where('serial', $storeSerial)->first();
-            if (!$store) return;
+            if (! $store) {
+                return;
+            }
 
             $owner = User::where('name', $store->createdby)->first();
-            if (!$owner) return;
+            if (! $owner) {
+                return;
+            }
 
             $subject = "Nueva venta - {$order->order}";
             $body = '
@@ -227,26 +240,31 @@ class OrderController extends Controller
 
             MailService::send($owner->name, $subject, $body);
         } catch (\Exception $e) {
-            \Illuminate\Support\Facades\Log::error('Order notification failed: ' . $e->getMessage());
+            Log::error('Order notification failed: '.$e->getMessage());
         }
     }
 
     // Public: get order detail for thank-you page
     public function publicOrderDetail(Request $request, $id)
     {
-        $order = is_numeric($id)
-            ? PurchaseOrder::with('shippingForm')->find($id)
-            : PurchaseOrder::with('shippingForm')->where('order', $id)->first();
-
-        if (!$order) {
+        $cartToken = $request->header('X-Cart-Token');
+        if (! is_string($cartToken) || trim($cartToken) === '') {
             return response()->json(['message' => 'Orden no encontrada.'], 404);
         }
 
-        $items = \App\Models\Cart::where('orderC', $order->order)
+        $order = is_numeric($id)
+            ? PurchaseOrder::with('shippingForm')->where('session', $cartToken)->find($id)
+            : PurchaseOrder::with('shippingForm')->where('session', $cartToken)->where('order', $id)->first();
+
+        if (! $order) {
+            return response()->json(['message' => 'Orden no encontrada.'], 404);
+        }
+
+        $items = Cart::where('orderC', $order->order)
             ->with(['productData', 'addons.addon'])
             ->get()
-            ->map(fn($i) => [
-                'name' => $i->productData->keyy ?? 'Producto #' . $i->product,
+            ->map(fn ($i) => [
+                'name' => $i->productData->keyy ?? 'Producto #'.$i->product,
                 'image' => $i->productData->link ?? null,
                 'qty' => (int) $i->cant,
                 'price' => (float) $i->price,
@@ -271,7 +289,8 @@ class OrderController extends Controller
         $store = Store::byOwner($user->name)->firstOrFail();
         $order = PurchaseOrder::where('serial', $store->serial)->findOrFail($id);
         $request->validate(['precio' => 'required|numeric|min:0', 'tipo' => 'required|string']);
-        \App\Models\ExtraCharge::create(['orderP' => $order->order, 'precio' => $request->precio, 'tipoCargo' => $request->tipo]);
+        ExtraCharge::create(['orderP' => $order->order, 'precio' => $request->precio, 'tipoCargo' => $request->tipo]);
+
         return response()->json(['message' => 'Cargo extra agregado.']);
     }
 
@@ -281,64 +300,32 @@ class OrderController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        $order = PurchaseOrder::where('serial', $store->serial)->findOrFail($id);
+        $order = DB::transaction(function () use ($store, $id) {
+            $order = PurchaseOrder::where('serial', $store->serial)->lockForUpdate()->findOrFail($id);
+            Cart::where('orderC', $order->order)
+                ->where('variation', $store->serial)
+                ->where('status', '!=', '3')
+                ->update(['status' => '3']);
 
-        \App\Models\Cart::where('orderC', $order->order)->update(['status' => '3']);
+            return $order;
+        });
 
         return response()->json(['message' => 'Pago confirmado.', 'data' => ['order' => $order->order, 'status' => '3']]);
-    }
-
-    private function redeemLoyaltyForCheckout($storeSerial, $phone, $pointsToRedeem)
-    {
-        try {
-            $store = Store::where('serial', $storeSerial)->first();
-            if (!$store) return 0;
-            $config = LoyaltyConfig::getConfig($store->id);
-            if (!$config->enabled) return 0;
-
-            $client = Client::where('store_id', $store->id)->where('phone', $phone)->first();
-            if (!$client) return 0;
-
-            $balance = LoyaltyPoint::getBalance($store->id, $client->id);
-            if ($balance < $pointsToRedeem) return 0;
-            if ($pointsToRedeem < $config->minimum_points_to_redeem) return 0;
-
-            $discount = floor($pointsToRedeem / $config->pesos_per_point);
-            LoyaltyPoint::redeemPoints($store->id, $client->id, $pointsToRedeem, 'checkout');
-            return $discount;
-        } catch (\Exception $e) {
-            return 0;
-        }
-    }
-
-    private function earnLoyaltyPoints($order, $storeSerial, $phone)
-    {
-        try {
-            $store = Store::where('serial', $storeSerial)->first();
-            if (!$store) return;
-            $config = LoyaltyConfig::getConfig($store->id);
-            if (!$config->enabled) return;
-
-            $client = Client::where('store_id', $store->id)->where('phone', $phone)->first();
-            if (!$client) return;
-
-            $points = (int) floor($order->total * $config->points_per_peso);
-            if ($points > 0) {
-                LoyaltyPoint::addPoints($store->id, $client->id, $points, 'earn', "Compra {$order->order}", $order->order);
-            }
-        } catch (\Exception $e) {}
     }
 
     private function trackSubscriptionSale($storeSerial, $amount)
     {
         try {
             $store = Store::where('serial', $storeSerial)->first();
-            if (!$store) return;
+            if (! $store) {
+                return;
+            }
             $sub = StoreSubscription::getActive($store->id);
             if ($sub && $sub->plan->price_percent > 0) {
                 $sub->addSale($amount);
             }
-        } catch (\Exception $e) {}
+        } catch (\Exception $e) {
+        }
     }
 
     // Customer order history
@@ -356,13 +343,13 @@ class OrderController extends Controller
             ->whereIn('order', $cartOrders)
             ->orderByDesc('id')
             ->get()
-            ->map(fn($o) => [
+            ->map(fn ($o) => [
                 'id' => $o->id,
                 'order' => $o->order,
                 'total' => (float) $o->total,
                 'fecha' => $o->date,
-                'items' => $o->cartItems->map(fn($i) => [
-                    'name' => $i->product->keyy ?? '',
+                'items' => $o->cartItems->map(fn ($i) => [
+                    'name' => $i->productData->keyy ?? '',
                     'qty' => $i->cant,
                 ]),
             ]);
