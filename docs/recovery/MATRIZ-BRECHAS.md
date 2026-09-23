@@ -52,3 +52,46 @@ Fecha: 2026-09-22 · Rama: `recuperacion` (HEAD `2985648`, cambios sin commit/pu
 - Nada desplegado en producción; sin commit ni push (pendiente autorización del dueño).
 
 Firmado: `ruta-seguridad` · `ruta-qa` · `ruta-review` — 2026-09-22.
+
+---
+
+## Estado de evidencia FASE 8A (validación final R3 + micro-ronda)
+
+Fecha: 2026-09-23 · Rama: `recuperacion` · HEAD actual `943860a5d9772ce7eb133c91f81410a7729ef653` tras `reset --soft` del commit local no autorizado `8a43a72`; 8A + micro-fixes preservados en index/working tree, **SIN commit y SIN push**, pendientes de autorización explícita. Suite final: **158 tests / 938 assertions** (SQLite `:memory:`), focal 8A **30 tests / 165 assertions**, `php -l` 51 archivos OK, Pint focalizado passed y diff check limpio. Seguridad micro **GO** y review final **GO**, sin P0/P1 nuevos. Detalle en `FASE-8A-reporte.md`.
+
+Nuevas filas cerradas en esta fase:
+
+| ID | Módulo/flujo | Evidencia | Ruta/endpoint | Rol/tenant | Estado código | Pruebas | Brecha | Riesgo | Fase |
+|---|---|---|---|---|---|---|---|---|---|
+| 8A-01 | Idempotencia canónica de órdenes (pay/cancel/confirm/refund/return/proof/extra) | auditoría P0/P1 | `OrderIdempotency.php` + `order_audit_events` | todos | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | Fase8aCorrectiveTest (422 sin key en pay/cancel; 1 sola preference con 2 keys HTTP), OrderFinanceFlowTest | clave 1–100 chars; audit append-only con `request_hash`; conflicto mismo key/distinto contenido → 409 | crítico | 8 |
+| 8A-02 | Webhook MP canónico (sin doble cobro, `amount_paid` monotónico) | P0/P1 | `PaymentController::webhook` | MP | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | PaymentSecurityTest (3 webhooks → 2 tx, paid=80, no duplica retry), Fase8aCorrectiveTest (overpay→exception, legacy_unknown con evidencia→paid sin duplicar, backfill re-notificación estable) | `paidCents = max(prev, acumulado)`; `order_provider_transactions` append-only único provider+payment_id; items status 5 intactos; throttling por `webhook_secret` + HMAC | crítico | 8 |
+| 8A-03 | Conversión legacy `legacy_unknown` one-shot | P2 | `OrderController::confirmPayment` | dueño | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | Fase8aCorrectiveTest (cash+referencia → paid; sin method → 422; 2º intento otro método → 422) | one-shot; congelado `frozen_at`; refs cash/bank no re-canonizables | alto | 8 |
+| 8A-04 | Financial chunk `clean-data` fail-closed intra-tx | P2 | `AdminController::cleanData` | superadmin puro | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | Fase8aCorrectiveTest (superadmin con filas financieras → 409; inyección vía `DB::listen` detectada DENTRO de la tx → 409 + atomicidad: 0 borrados, fila infiltrada rodó atrás) | doble check dentro de la transacción; super-admin dual-rol no muta finanzas de tienda | crítico | 8 |
+| 8A-05 | Comprobantes de transferencia append-only + doble límite | P1/P2 | `OrderFinanceController::submitProof` + `throttle:proof-uploads` | cliente/dueño | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | Fase8aCorrectiveTest (5/min orden: 3×201, 4-5×422, 6×429; IP 20×404 + 1×429), OrderFinanceFlowTest (append-only, 3 archivos máx, no paga hasta confirmar, ejecutable 422) | 2 límites combinados (IP+serial+order 5/min y IP 20/min fail-closed); storage privado | alto | 8 |
+| 8A-06 | Refund/return con permisos `orders.refunds.verify` / `orders.returns.verify` | P2 | `OrderFinanceController::refund/receiveReturn` + migración 000004 | dueño | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | Fase8aCorrectiveTest (403 sin permiso, 0 audit events), OrderFinanceFlowTest (refund ≤ amount_paid, return restockable/no independientes de refund) | 403 middleware antes de tocar la orden; `amount_refunded` ≤ `amount_paid` | alto | 8 |
+
+### Cierres verificados de la micro-ronda
+
+| ID | Cierre verificado | Evidencia (archivo/función) | Tests / review | Estado |
+|---|---|---|---|---|
+| 8A-P7 | `emitOrder` incorpora `denySuperAdminMutation`; superadmin puro/dual recibe 403 antes de mutar | `app/Http/Controllers/Api/V1/DeliveryController.php:25-35` (`emitOrder`) | `test_emit_shipping_is_denied_for_a_pure_superadmin`, `test_emit_shipping_denies_a_dual_role_superadmin_before_mutating`; seguridad GO + review GO | CERRADO: IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE |
+| 8A-P8 | Paridad 422/502: `/pay` no-MP → 422 sin HTTP; owner `createPreference` con key vacía/ausente → 422; `PaymentPreferenceNotAllowed` separa reglas 422 de transporte/MP inválido 502 genérico con rollback | `OrderController::publicPaymentPreference()` (`app/Http/Controllers/Api/V1/OrderController.php:302-361`), `PaymentController::createPreference()` (`app/Http/Controllers/Api/V1/PaymentController.php:87-126`), `app/Exceptions/PaymentPreferenceNotAllowed.php:7-22`, `CreatePreference.php:38-63` | `test_public_pay_rejects_a_non_mp_order_without_calling_mercado_pago`, `test_store_preference_without_idempotency_key_is_422_not_502`, `test_public_pay_hides_transport_runtime_exception_and_rolls_back_snapshot`, `test_public_pay_maps_provider_500_and_malformed_response_to_generic_502`; seguridad GO + review GO | CERRADO: IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE |
+
+También cerrado y verificado: mensaje dinámico de `publicCancel` según `restocked`/`return_pending` (`OrderController.php:385-426`), probado por `test_public_cancel_reports_the_restock_in_the_message` y `test_public_cancel_reports_return_pending_message_when_already_departed`.
+
+Pendientes P2 registrados de 8A (NO bloqueantes del GO; deben resolverse antes del despliegue correspondiente):
+
+| ID | Hallazgo | Evidencia (archivo:línea) | Fase objetivo |
+|---|---|---|---|
+| 8A-P1 | Sin throttle en `/pay`, `/cancel` y `payments/webhook` (solo `transfer-proof` lo tiene) | `routes/api.php:57,323,325` vs `:319-320` | 9 |
+| 8A-P2 | Sin test para `Idempotency-Key` > 100 caracteres (validación existe en `OrderIdempotency::key()`) | `app/Services/OrderIdempotency.php:16-22` | 9 |
+| 8A-P3 | Webhook posterior a `payment_exception` sin prueba (2 cargos cubiertos, 3º no) | `Fase8aCorrectiveTest.php:40-76` | 9 |
+| 8A-P4 | `assertTrue(true)` en catch (débil por construcción) en test de dinero | `Fase8aCorrectiveTest.php:239,248` | 9 |
+| 8A-P5 | **MariaDB 11.8/Docker desechable: deadlocks, locks FOR UPDATE, doble webhook/aceptación simultáneos, migración 000003/000004 sobre clon — NO CONFIRMADO** | entorno real sin Docker | 9/14 |
+| 8A-P6 | Deferral UI del contrato estricto: `CheckoutView.vue` (frontend/src y bundle `public/`) NO envía `payment_method`; `payOrder`/`cancelOrder` NO envían `Idempotency-Key`. Backend ya devuelve 422 limpio (no 502), por lo que la UI sigue incompatible: checkout 422 y pay/cancel 422 hasta el lote UI. El backend estricto NO puede desplegarse separado. `legacy_unknown` queda inalcanzable desde checkout nuevo | `app/Http/Requests/Order/CheckoutRequest.php:27`, `frontend/src/views/public/store/CheckoutView.vue:84-95`, `frontend/src/api/public-store.js:35-38`; backend: `test_public_pay_without_idempotency_key_is_422_not_502`, `test_public_cancel_without_idempotency_key_is_422` | 7 (UI) / antes del despliegue conjunto |
+| 8A-P9 | `publicOrderDetail` es token-only y no recibe/valida serial; resolver contrato backend + frontend atómicamente | `routes/api.php:331`; `OrderController::publicOrderDetail()` (`app/Http/Controllers/Api/V1/OrderController.php:247-289`); `frontend/src/api/public-store.js:31-32`; tests actuales solo cubren token: `CheckoutInventoryTest::test_public_order_detail_requires_the_cart_token_that_created_it`, `Fase8aCorrectiveTest::test_public_order_detail_is_scoped_to_the_cart_token` | 7/9 / antes del despliegue conjunto |
+| 8A-P11 | Pint global reporta 26 archivos legacy preexistentes fuera del lote; Pint focalizado de los 51 archivos 8A pasa | auditoría final del orquestador: `vendor/bin/pint --test` global vs focalizado | mantenimiento / riesgo bajo |
+| 8A-P12 | Semántica dual de `cart.status=5`: despacho lo asigna; webhook lo interpreta/preserva como devuelto | `DeliveryController::dispatchOrder()` (`app/Http/Controllers/Api/V1/DeliveryController.php:420-427`) vs `PaymentController::webhook()` (`app/Http/Controllers/Api/V1/PaymentController.php:298-303`); `test_webhook_accepts_a_legacy_unknown_order_with_mp_evidence_and_skips_returned_items` no resuelve el contrato | 9 |
+| 8A-P13 | Subpago MP queda `pending` y webhook responde `ok` sin señal operativa específica | `PaymentController::webhook()` (`app/Http/Controllers/Api/V1/PaymentController.php:267-288,338`); `PaymentSecurityTest::test_webhook_preserves_a_partial_charge_without_marking_the_order_paid` | 9 |
+
+`8A-P10` no se duplica: el pendiente MariaDB/InnoDB ya está registrado como `8A-P5`.

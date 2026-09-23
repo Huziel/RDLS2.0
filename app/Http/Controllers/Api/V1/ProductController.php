@@ -53,7 +53,7 @@ class ProductController extends Controller
 
             $validated = $request->validate([
                 'nombre' => ['required', 'string', 'max:255'],
-                'precio' => ['required', 'numeric', 'min:0'],
+                'precio' => ['required', 'decimal:0,2', 'min:0', 'max:999999999999.99'],
                 'imagen' => ['nullable', 'string'],
                 'descripcion' => ['nullable', 'string'],
                 'variable' => ['nullable', 'string'],
@@ -171,7 +171,7 @@ class ProductController extends Controller
             $this->normalizeBarcode($request);
             $validated = $request->validate([
                 'nombre' => ['sometimes', 'required', 'string', 'max:255'],
-                'precio' => ['sometimes', 'required', 'numeric', 'min:0'],
+                'precio' => ['sometimes', 'required', 'decimal:0,2', 'min:0', 'max:999999999999.99'],
                 'imagen' => ['nullable', 'string'],
                 'descripcion' => ['nullable', 'string'],
                 'variable' => ['nullable', 'string'],

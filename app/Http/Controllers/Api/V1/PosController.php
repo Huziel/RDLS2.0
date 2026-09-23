@@ -172,7 +172,7 @@ class PosController extends Controller
         $store = Store::byOwner($user->name)->firstOrFail();
 
         $validated = $request->validate([
-            'extra' => ['nullable', 'numeric', 'min:0'],
+            'extra' => ['nullable', 'decimal:0,2', 'min:0', 'max:999999999999.99'],
         ]);
 
         $order = DB::transaction(function () use ($orderId, $store, $validated) {

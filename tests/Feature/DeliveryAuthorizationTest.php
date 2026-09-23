@@ -107,6 +107,15 @@ class DeliveryAuthorizationTest extends TestCase
         $blocked = $this->rider($store, blocked: true);
         $eligible = $this->rider($store, email: 'eligible-pool@example.test');
 
+        Sanctum::actingAs($eligible, ['*']);
+        $available = $this->getJson('/api/v1/delivery/available-orders')->assertOk();
+        $available->assertJsonStructure(['data' => [[
+            'shipping_id', 'store_id', 'store' => ['serial', 'name'], 'fecha', 'assignment_mode',
+        ]], 'meta']);
+        foreach (['cliente', 'telefono', 'order_id', 'total', 'lat', 'lng', 'direccion', 'payment'] as $forbidden) {
+            $this->assertArrayNotHasKey($forbidden, $available->json('data.0'));
+        }
+
         Sanctum::actingAs($blocked, ['*']);
         $this->postJson("/api/v1/delivery/orders/{$shippingId}/accept")->assertForbidden();
         $this->assertDatabaseHas('ordenenvio', ['id' => $shippingId, 'delivery' => null, 'status' => '0']);
@@ -232,6 +241,41 @@ class DeliveryAuthorizationTest extends TestCase
         $this->assertDatabaseHas('ordenenvio', ['id' => $pool->id, 'delivery' => null, 'status' => '0']);
     }
 
+    public function test_assignment_and_acceptance_do_not_mark_departure_until_owner_dispatches(): void
+    {
+        [$owner, $store] = $this->signInStore('owner-dispatch@example.test', ['delivery.manage', 'orders.dispatch']);
+        $order = $this->order($store, 'DIRECT-DISPATCH');
+        Cart::create($this->cartData($store, $order, '4'));
+        $rider = $this->rider($store);
+
+        $shippingId = $this->postJson("/api/v1/orders/{$order->id}/emit-shipping", [
+            'assignment_mode' => 'direct',
+            'delivery_id' => $rider->id,
+        ])->assertCreated()
+            ->assertJsonPath('data.departure_state', 'not_departed')
+            ->json('data.id');
+
+        $this->assertDatabaseHas('cart', ['orderC' => $order->order, 'status' => 4]);
+        $this->postJson("/api/v1/delivery/orders/{$shippingId}/dispatch")
+            ->assertOk()
+            ->assertJsonPath('data.departure_state', 'departed')
+            ->assertJsonPath('data.status', '2');
+        $this->postJson("/api/v1/delivery/orders/{$shippingId}/dispatch")
+            ->assertOk()
+            ->assertJsonPath('idempotent', true);
+        $this->assertDatabaseHas('cart', ['orderC' => $order->order, 'status' => 5]);
+
+        Sanctum::actingAs($rider, ['*']);
+        $this->postJson("/api/v1/delivery/orders/{$shippingId}/cancel")->assertConflict();
+
+        Sanctum::actingAs($owner, ['*']);
+        $this->withHeader('Idempotency-Key', 'cancel-after-dispatch')
+            ->postJson("/api/v1/orders/{$order->id}/cancel")
+            ->assertOk()
+            ->assertJsonPath('data.return_pending', true)
+            ->assertJsonPath('data.restocked', false);
+    }
+
     public function test_emission_is_idempotent_and_cancelled_orders_are_rejected(): void
     {
         [, $store] = $this->signInStore('owner-idempotent@example.test', ['delivery.manage']);
@@ -324,16 +368,18 @@ class DeliveryAuthorizationTest extends TestCase
 
     private function buildDeliverySchema(): void
     {
-        Schema::create('ordenenvio', function (Blueprint $table) {
-            $table->id();
-            $table->unsignedBigInteger('tienda');
-            $table->unsignedBigInteger('delivery')->nullable();
-            $table->unsignedBigInteger('ordenCompra');
-            $table->dateTime('fechaIn')->nullable();
-            $table->integer('status')->nullable();
-            $table->string('assignment_mode', 10)->nullable();
-            $table->index('ordenCompra');
-        });
+        if (! Schema::hasTable('ordenenvio')) {
+            Schema::create('ordenenvio', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('tienda');
+                $table->unsignedBigInteger('delivery')->nullable();
+                $table->unsignedBigInteger('ordenCompra');
+                $table->dateTime('fechaIn')->nullable();
+                $table->integer('status')->nullable();
+                $table->string('assignment_mode', 10)->nullable();
+                $table->index('ordenCompra');
+            });
+        }
 
         Schema::create('anexosdeliver', function (Blueprint $table) {
             $table->id();
@@ -379,11 +425,13 @@ class DeliveryAuthorizationTest extends TestCase
             $table->string('code');
         });
 
-        Schema::create('gastosextras', function (Blueprint $table) {
-            $table->id();
-            $table->string('orderP');
-            $table->decimal('precio', 12, 2);
-            $table->string('tipoCargo');
-        });
+        if (! Schema::hasTable('gastosextras')) {
+            Schema::create('gastosextras', function (Blueprint $table) {
+                $table->id();
+                $table->string('orderP');
+                $table->decimal('precio', 12, 2);
+                $table->string('tipoCargo');
+            });
+        }
     }
 }

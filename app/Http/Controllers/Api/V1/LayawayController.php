@@ -13,6 +13,7 @@ class LayawayController extends Controller
     {
         $store = Store::byOwner($request->user()->name)->firstOrFail();
         $layaways = Layaway::where('store_id', $store->id)->orderByDesc('id')->paginate(20);
+
         return response()->json($layaways);
     }
 
@@ -22,8 +23,8 @@ class LayawayController extends Controller
         $request->validate([
             'client_name' => 'required|string',
             'client_phone' => 'nullable|string',
-            'total' => 'required|numeric|min:0',
-            'paid' => 'required|numeric|min:0',
+            'total' => 'required|decimal:0,2|min:0|max:999999999999.99',
+            'paid' => 'required|decimal:0,2|min:0|max:999999999999.99',
             'products' => 'nullable|array',
             'notes' => 'nullable|string',
         ]);
@@ -32,6 +33,7 @@ class LayawayController extends Controller
         $data['pending'] = $data['total'] - $data['paid'];
         $data['status'] = $data['pending'] <= 0 ? 'completed' : 'active';
         $layaway = Layaway::create($data);
+
         return response()->json(['data' => $layaway, 'message' => 'Apartado creado.'], 201);
     }
 
@@ -39,11 +41,12 @@ class LayawayController extends Controller
     {
         $store = Store::byOwner($request->user()->name)->firstOrFail();
         $layaway = Layaway::where('store_id', $store->id)->findOrFail($id);
-        $request->validate(['paid' => 'required|numeric|min:0']);
+        $request->validate(['paid' => 'required|decimal:0,2|min:0|max:999999999999.99']);
         $layaway->paid = $request->paid;
         $layaway->pending = max(0, $layaway->total - $layaway->paid);
         $layaway->status = $layaway->pending <= 0 ? 'completed' : 'active';
         $layaway->save();
+
         return response()->json(['data' => $layaway, 'message' => 'Pago actualizado.']);
     }
 
@@ -51,6 +54,7 @@ class LayawayController extends Controller
     {
         $store = Store::byOwner($request->user()->name)->firstOrFail();
         Layaway::where('store_id', $store->id)->where('id', $id)->delete();
+
         return response()->json(['message' => 'Apartado eliminado.']);
     }
 }

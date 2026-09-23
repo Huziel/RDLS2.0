@@ -12,7 +12,7 @@ class PurchaseOrder extends Model
 
     protected $fillable = [
         'order', 'tel', 'serial', 'session', 'lat', 'long', 'total', 'totEnvio', 'nombre', 'date',
-        'checkout_key', 'loyalty_discount', 'order_state', 'cancelled_at', 'restock_key',
+        'checkout_key', 'loyalty_discount', 'order_state', 'cancelled_at', 'restock_key', 'delivery_type',
     ];
 
     protected $casts = [
@@ -27,13 +27,18 @@ class PurchaseOrder extends Model
 
     public function isPaid(): bool
     {
+        $payment = $this->relationLoaded('payment') ? $this->payment : $this->payment()->first();
+        if ($payment) {
+            return $payment->representsCollectedFunds();
+        }
+
         return (string) $this->order_state === self::STATE_PAID
             || $this->cartItems()->where('status', '3')->exists();
     }
 
     public function isCancelled(): bool
     {
-        return (string) $this->order_state === self::STATE_CANCELLED;
+        return (string) $this->order_state === self::STATE_CANCELLED || $this->cancelled_at !== null;
     }
 
     public function store()
@@ -64,5 +69,25 @@ class PurchaseOrder extends Model
     public function mercadoPagoPayment()
     {
         return $this->hasOne(MercadoPagoPayment::class, 'orderP', 'order');
+    }
+
+    public function payment()
+    {
+        return $this->hasOne(OrderPayment::class, 'order_id');
+    }
+
+    public function returnRecord()
+    {
+        return $this->hasOne(OrderReturn::class, 'order_id');
+    }
+
+    public function auditEvents()
+    {
+        return $this->hasMany(OrderAuditEvent::class, 'order_id');
+    }
+
+    public function providerTransactions()
+    {
+        return $this->hasMany(OrderProviderTransaction::class, 'order_id');
     }
 }

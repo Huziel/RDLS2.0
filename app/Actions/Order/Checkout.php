@@ -3,22 +3,31 @@
 namespace App\Actions\Order;
 
 use App\Actions\Inventory\ConsumeInventory;
+use App\Exceptions\IdempotencyConflict;
 use App\Models\Cart;
 use App\Models\CartAddon;
 use App\Models\Client;
 use App\Models\LoyaltyConfig;
 use App\Models\LoyaltyPoint;
+use App\Models\OrderAuditEvent;
+use App\Models\OrderPayment;
 use App\Models\ProductAddon;
 use App\Models\PurchaseOrder;
 use App\Models\ShippingForm;
 use App\Models\Store;
 use App\Models\StoreFeature;
+use App\Services\CanonicalOrderAmount;
+use App\Services\OrderIdempotency;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class Checkout
 {
-    public function __construct(private readonly ConsumeInventory $consumeInventory) {}
+    public function __construct(
+        private readonly ConsumeInventory $consumeInventory,
+        private readonly OrderIdempotency $idempotency,
+        private readonly CanonicalOrderAmount $amounts,
+    ) {}
 
     public function __invoke(
         string $sessionId,
@@ -32,6 +41,8 @@ class Checkout
         int $loyaltyPoints = 0,
         ?string $idempotencyKey = null,
         ?string $deliveryType = null,
+        string $paymentMethod = 'legacy_unknown',
+        ?string $requestHash = null,
     ): PurchaseOrder {
         $store = Store::where('serial', $storeSerial)->firstOrFail();
 
@@ -47,6 +58,8 @@ class Checkout
             $loyaltyPoints,
             $idempotencyKey,
             $deliveryType,
+            $paymentMethod,
+            $requestHash,
         ) {
             $cartItems = Cart::active()
                 ->byUser($sessionId)
@@ -64,6 +77,7 @@ class Checkout
                         ->first();
 
                 if ($existing) {
+                    $this->assertCheckoutPayload($existing, $requestHash);
                     $existing->wasRecentlyCreated = false;
 
                     return $existing;
@@ -82,11 +96,10 @@ class Checkout
                 ->where('checkout_key', $checkoutKey)
                 ->first();
             if ($existing) {
+                $this->assertCheckoutPayload($existing, $requestHash);
                 $originalItemIds = Cart::where('orderC', $existing->order)->orderBy('id')->pluck('id')->all();
                 if ($originalItemIds !== $cartItems->pluck('id')->all()) {
-                    throw ValidationException::withMessages([
-                        'idempotency_key' => ['La clave de idempotencia ya fue utilizada para otro carrito.'],
-                    ]);
+                    throw new IdempotencyConflict('La clave de idempotencia ya fue utilizada para otro carrito.');
                 }
                 $existing->wasRecentlyCreated = false;
 
@@ -123,7 +136,8 @@ class Checkout
                 ]);
             }
 
-            $subtotal = (float) $cartItems->sum('price');
+            $subtotalCents = $cartItems->sum(fn (Cart $item) => $this->amounts->cents($item->price));
+            $subtotal = (float) ($subtotalCents / 100);
             $loyaltyDiscount = $this->redeemLoyalty(
                 $store,
                 $phone,
@@ -131,7 +145,11 @@ class Checkout
                 $subtotal,
                 "checkout:{$checkoutKey}",
             );
-            $total = max(0, $subtotal - $loyaltyDiscount);
+            $discountCents = $this->quantizeCents((float) $loyaltyDiscount);
+            $totalCents = $subtotalCents - $discountCents;
+            if ($totalCents < 0) {
+                throw ValidationException::withMessages(['cart' => ['El descuento excede el total del carrito.']]);
+            }
             $shippingCost = $this->shippingCost(
                 $store,
                 $deliveryType,
@@ -140,6 +158,7 @@ class Checkout
                 $requestedShippingCost,
                 $shippingAddress,
             );
+            $shippingCents = $this->quantizeCents($shippingCost);
             $orderNumber = 'ORD-'.now()->format('YmdHisv').'-'.random_int(100000, 999999);
 
             $order = PurchaseOrder::create([
@@ -149,13 +168,30 @@ class Checkout
                 'session' => $sessionId,
                 'lat' => $lat ?? '0',
                 'long' => $lng ?? '0',
-                'total' => $total,
-                'totEnvio' => $shippingCost,
+                'total' => $this->amounts->money($totalCents),
+                'totEnvio' => $this->amounts->money($shippingCents),
                 'nombre' => $customerName,
                 'date' => now()->format('Y-m-d'),
                 'checkout_key' => $checkoutKey,
-                'loyalty_discount' => $loyaltyDiscount,
+                'loyalty_discount' => $this->amounts->money($discountCents),
                 'order_state' => PurchaseOrder::STATE_PENDING,
+                'delivery_type' => $deliveryType,
+            ]);
+
+            $payment = OrderPayment::create([
+                'order_id' => $order->id,
+                'store_id' => $store->id,
+                'method' => $paymentMethod,
+                'terms' => $paymentMethod === 'cash_on_delivery' ? 'cod' : 'prepaid',
+                'status' => 'pending',
+                'currency' => 'MXN',
+                'products_amount' => $this->amounts->money($subtotalCents),
+                'discount_amount' => $this->amounts->money($discountCents),
+                'shipping_amount' => $this->amounts->money($shippingCents),
+                'extra_amount' => '0.00',
+                'amount_due' => $this->amounts->money($totalCents + $shippingCents),
+                'amount_paid' => '0.00',
+                'amount_refunded' => '0.00',
             ]);
 
             if (! empty($shippingAddress['direccion'])) {
@@ -177,8 +213,44 @@ class Checkout
 
             $this->earnLoyalty($store, $phone, $order);
 
+            $hash = $requestHash ?? $this->idempotency->hash([
+                'delivery_type' => $deliveryType,
+                'payment_method' => $paymentMethod,
+                'items' => $cartItems->pluck('id')->all(),
+            ]);
+            $this->idempotency->record(
+                $order,
+                $store->id,
+                null,
+                'customer',
+                'checkout_created',
+                $this->idempotency->eventKey($order, 'checkout', (string) $idempotencyKey),
+                $hash,
+                null,
+                ['order_state' => PurchaseOrder::STATE_PENDING, 'payment_status' => $payment->status],
+                201,
+                ['order_id' => $order->order, 'id' => $order->id],
+            );
+
             return $order;
         });
+    }
+
+    private function assertCheckoutPayload(PurchaseOrder $order, ?string $requestHash): void
+    {
+        if ($requestHash === null) {
+            return;
+        }
+        $event = OrderAuditEvent::where('order_id', $order->id)->where('event_type', 'checkout_created')->first();
+        if (! $event || ! hash_equals($event->request_hash, $requestHash)) {
+            throw new IdempotencyConflict('La clave de idempotencia ya fue utilizada con otro contenido.');
+        }
+    }
+
+    /** Cuantiza a centavos con half-up (misma politica que decimal(14,2)). */
+    private function quantizeCents(float $amount): int
+    {
+        return (int) round($amount * 100, 0, PHP_ROUND_HALF_UP);
     }
 
     private function redeemLoyalty(Store $store, string $phone, int $points, float $subtotal, string $reference): float

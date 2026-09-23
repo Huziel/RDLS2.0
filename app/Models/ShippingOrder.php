@@ -10,7 +10,12 @@ class ShippingOrder extends Model
 
     public $timestamps = false;
 
-    protected $fillable = ['tienda', 'delivery', 'ordenCompra', 'fechaIn', 'status', 'assignment_mode'];
+    protected $fillable = [
+        'tienda', 'delivery', 'ordenCompra', 'fechaIn', 'status', 'assignment_mode',
+        'departure_state', 'departed_at',
+    ];
+
+    protected $casts = ['departed_at' => 'datetime'];
 
     /**
      * Estados de ordenenvio verificados contra el codigo existente:

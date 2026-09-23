@@ -31,6 +31,7 @@ class CheckoutInventoryTest extends TestCase
             'nombre' => 'Cliente',
             'telefono' => '5551112222',
             'tipo_envio' => 'pickup',
+            'payment_method' => 'cash',
         ];
 
         $idempotencyKey = str_repeat('k', 100);
@@ -59,7 +60,7 @@ class CheckoutInventoryTest extends TestCase
         $this->assertDatabaseHas('stock', ['idProd' => $product->id, 'stock' => 1]);
         $this->assertDatabaseCount('ordencompra', 1);
 
-        $this->flushHeaders()->withHeader('X-Cart-Token', 'empty-cart')
+        $this->flushHeaders()->withHeaders(['X-Cart-Token' => 'empty-cart', 'Idempotency-Key' => 'empty-cart'])
             ->postJson("/api/v1/stores/{$store->serial}/checkout", $payload)
             ->assertUnprocessable()
             ->assertJsonValidationErrors('cart');
@@ -67,8 +68,7 @@ class CheckoutInventoryTest extends TestCase
         $this->cart($product->id, $store->createdby, $store->serial, 'cart-checkout', 1, 25);
         $this->withHeaders(['X-Cart-Token' => 'cart-checkout', 'Idempotency-Key' => $idempotencyKey])
             ->postJson("/api/v1/stores/{$store->serial}/checkout", $payload)
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('idempotency_key');
+            ->assertConflict();
 
         $this->cart($product->id, $store->createdby, $store->serial, 'other-cart', 1, 25);
         $this->withHeaders(['X-Cart-Token' => 'other-cart', 'Idempotency-Key' => $idempotencyKey])
@@ -84,11 +84,12 @@ class CheckoutInventoryTest extends TestCase
         $product = $this->createProduct($store->createdby, ['number' => '25'], 0);
         $this->cart($product->id, $store->createdby, $store->serial, 'cart-empty-stock', 1, 25);
 
-        $this->withHeader('X-Cart-Token', 'cart-empty-stock')
+        $this->withHeaders(['X-Cart-Token' => 'cart-empty-stock', 'Idempotency-Key' => 'empty-stock'])
             ->postJson("/api/v1/stores/{$store->serial}/checkout", [
                 'nombre' => 'Cliente',
                 'telefono' => '5551112222',
                 'tipo_envio' => 'pickup',
+                'payment_method' => 'cash',
             ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('stock');
@@ -104,11 +105,12 @@ class CheckoutInventoryTest extends TestCase
         $foreign = $this->createProduct('foreign@example.test', ['number' => '30'], 4);
         $this->cart($foreign->id, $store->createdby, $store->serial, 'cart-foreign', 1, 30);
 
-        $this->withHeader('X-Cart-Token', 'cart-foreign')
+        $this->withHeaders(['X-Cart-Token' => 'cart-foreign', 'Idempotency-Key' => 'foreign-cart'])
             ->postJson("/api/v1/stores/{$store->serial}/checkout", [
                 'nombre' => 'Cliente',
                 'telefono' => '5551112222',
                 'tipo_envio' => 'pickup',
+                'payment_method' => 'cash',
             ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('stock');
@@ -135,11 +137,12 @@ class CheckoutInventoryTest extends TestCase
         ]);
         $addon->update(['activo' => false]);
 
-        $this->withHeader('X-Cart-Token', 'cart-addon')
+        $this->withHeaders(['X-Cart-Token' => 'cart-addon', 'Idempotency-Key' => 'addon-cart'])
             ->postJson("/api/v1/stores/{$store->serial}/checkout", [
                 'nombre' => 'Cliente',
                 'telefono' => '5551112222',
                 'tipo_envio' => 'pickup',
+                'payment_method' => 'cash',
             ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('cart');
@@ -171,6 +174,7 @@ class CheckoutInventoryTest extends TestCase
             'nombre' => 'Cliente leal',
             'telefono' => '5553334444',
             'tipo_envio' => 'pickup',
+            'payment_method' => 'cash',
         ];
 
         $this->withHeaders($headers)
@@ -205,20 +209,22 @@ class CheckoutInventoryTest extends TestCase
         $product = $this->createProduct($store->createdby, ['number' => '10'], 2);
         $this->cart($product->id, $store->createdby, $store->serial, 'pickup-disabled', 1, 10);
 
-        $this->withHeader('X-Cart-Token', 'pickup-disabled')
+        $this->withHeaders(['X-Cart-Token' => 'pickup-disabled', 'Idempotency-Key' => 'pickup-disabled'])
             ->postJson("/api/v1/stores/{$store->serial}/checkout", [
                 'nombre' => 'Cliente',
                 'telefono' => '5551112222',
                 'tipo_envio' => 'pickup',
+                'payment_method' => 'cash',
             ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('tipo_envio');
 
-        $this->withHeader('X-Cart-Token', 'pickup-disabled')
+        $this->withHeaders(['X-Cart-Token' => 'pickup-disabled', 'Idempotency-Key' => 'shipping-enabled'])
             ->postJson("/api/v1/stores/{$store->serial}/checkout", [
                 'nombre' => 'Cliente',
                 'telefono' => '5551112222',
                 'tipo_envio' => 'shipping',
+                'payment_method' => 'cash',
                 'direccion' => 'Direccion distante',
                 'lat' => 0,
                 'lng' => 0,
@@ -232,11 +238,12 @@ class CheckoutInventoryTest extends TestCase
         [, $store] = $this->signInStore('private-order@example.test');
         $product = $this->createProduct($store->createdby, ['number' => '10'], 1);
         $this->cart($product->id, $store->createdby, $store->serial, 'private-cart', 1, 10);
-        $order = $this->withHeader('X-Cart-Token', 'private-cart')
+        $order = $this->withHeaders(['X-Cart-Token' => 'private-cart', 'Idempotency-Key' => 'private-cart'])
             ->postJson("/api/v1/stores/{$store->serial}/checkout", [
                 'nombre' => 'Cliente',
                 'telefono' => '5551112222',
                 'tipo_envio' => 'pickup',
+                'payment_method' => 'cash',
             ])
             ->assertCreated()
             ->json('data.order_id');

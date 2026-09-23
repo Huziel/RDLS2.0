@@ -6,6 +6,7 @@ use App\Models\Cart;
 use App\Models\DeliveryLink;
 use App\Models\DeliveryLocation;
 use App\Models\DeliveryProfile;
+use App\Models\OrderPayment;
 use App\Models\PurchaseOrder;
 use App\Models\ShippingOrder;
 use App\Models\SiteSetting;
@@ -297,15 +298,30 @@ class DeliverySecurityFixTest extends TestCase
         [, $store] = $this->signInOwner('confirm-owner@example.test');
         $order = $this->order($store, 'CONFIRM-1');
         $this->cartLine($store, $order, null, '2');
+        OrderPayment::create([
+            'order_id' => $order->id,
+            'store_id' => $store->id,
+            'method' => 'cash',
+            'terms' => 'prepaid',
+            'status' => 'pending',
+            'currency' => 'MXN',
+            'products_amount' => 100,
+            'discount_amount' => 0,
+            'shipping_amount' => 10,
+            'extra_amount' => 0,
+            'amount_due' => 110,
+            'amount_paid' => 0,
+            'amount_refunded' => 0,
+        ]);
 
-        $this->putJson("/api/v1/orders/{$order->id}/confirm-payment")
+        $this->withHeader('Idempotency-Key', 'confirm-one')->putJson("/api/v1/orders/{$order->id}/confirm-payment")
             ->assertOk()
             ->assertJsonPath('data.status', '3');
         $this->assertTrue($order->refresh()->isPaid());
         $this->assertDatabaseHas('cart', ['orderC' => $order->order, 'status' => '3']);
 
         // Repeticion -> 200 idempotente, sin doble mutacion.
-        $this->putJson("/api/v1/orders/{$order->id}/confirm-payment")
+        $this->withHeader('Idempotency-Key', 'confirm-one')->putJson("/api/v1/orders/{$order->id}/confirm-payment")
             ->assertOk()
             ->assertJsonPath('message', 'La orden ya estaba pagada.');
         $this->assertDatabaseCount('cart', 1);
@@ -314,26 +330,24 @@ class DeliverySecurityFixTest extends TestCase
         $cancelled = $this->order($store, 'CONFIRM-2');
         $this->cartLine($store, $cancelled, null, '2');
         $cancelled->update(['order_state' => PurchaseOrder::STATE_CANCELLED]);
-        $this->putJson("/api/v1/orders/{$cancelled->id}/confirm-payment")->assertConflict();
+        $this->withHeader('Idempotency-Key', 'confirm-cancelled')->putJson("/api/v1/orders/{$cancelled->id}/confirm-payment")->assertConflict();
         $this->assertDatabaseHas('cart', ['orderC' => $cancelled->order, 'status' => '2']);
     }
 
-    public function test_confirm_payment_reconciles_the_canonical_state_of_a_legacy_paid_order(): void
+    public function test_confirm_payment_rejects_a_legacy_paid_order_without_persisted_method(): void
     {
         [, $store] = $this->signInOwner('confirm-legacy@example.test');
         // Pago llegado por la marca legacy (cart status='3') sin order_state.
         $order = $this->order($store, 'CONFIRM-LEGACY', orderState: PurchaseOrder::STATE_PENDING);
         $this->cartLine($store, $order, null, '3');
 
-        $this->putJson("/api/v1/orders/{$order->id}/confirm-payment")
-            ->assertOk()
-            ->assertJsonPath('message', 'La orden ya estaba pagada.')
-            ->assertJsonPath('data.status', '3');
+        $this->withHeader('Idempotency-Key', 'legacy-confirm')->putJson("/api/v1/orders/{$order->id}/confirm-payment")
+            ->assertUnprocessable();
 
-        // La rama idempotente reconcilia el estado canonico: paid.
+        // La marca legacy no autoriza inferir metodo ni confirmar finanzas.
         $this->assertDatabaseHas('ordencompra', [
             'order' => $order->order,
-            'order_state' => PurchaseOrder::STATE_PAID,
+            'order_state' => PurchaseOrder::STATE_PENDING,
         ]);
     }
 
@@ -361,8 +375,8 @@ class DeliverySecurityFixTest extends TestCase
 
         // El dueño cancela ambas compras: los envios pasan a estado terminal '4'.
         Sanctum::actingAs($owner, ['*']);
-        $this->postJson("/api/v1/orders/{$pending->id}/cancel")->assertOk();
-        $this->postJson("/api/v1/orders/{$active->id}/cancel")->assertOk();
+        $this->withHeader('Idempotency-Key', 'cancel-pending')->postJson("/api/v1/orders/{$pending->id}/cancel")->assertOk();
+        $this->withHeader('Idempotency-Key', 'cancel-active')->postJson("/api/v1/orders/{$active->id}/cancel")->assertOk();
         $this->assertDatabaseHas('ordenenvio', ['id' => $pendingShipping, 'status' => ShippingOrder::STATUS_CANCELLED]);
         $this->assertDatabaseHas('ordenenvio', ['id' => $activeShipping, 'status' => ShippingOrder::STATUS_CANCELLED]);
 
@@ -680,16 +694,18 @@ class DeliverySecurityFixTest extends TestCase
 
     private function buildDeliverySchema(): void
     {
-        Schema::create('ordenenvio', function (Blueprint $table) {
-            $table->id();
-            $table->unsignedBigInteger('tienda');
-            $table->unsignedBigInteger('delivery')->nullable();
-            $table->unsignedBigInteger('ordenCompra');
-            $table->dateTime('fechaIn')->nullable();
-            $table->integer('status')->nullable();
-            $table->string('assignment_mode', 10)->nullable();
-            $table->index('ordenCompra');
-        });
+        if (! Schema::hasTable('ordenenvio')) {
+            Schema::create('ordenenvio', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('tienda');
+                $table->unsignedBigInteger('delivery')->nullable();
+                $table->unsignedBigInteger('ordenCompra');
+                $table->dateTime('fechaIn')->nullable();
+                $table->integer('status')->nullable();
+                $table->string('assignment_mode', 10)->nullable();
+                $table->index('ordenCompra');
+            });
+        }
 
         Schema::create('anexosdeliver', function (Blueprint $table) {
             $table->id();
@@ -728,12 +744,14 @@ class DeliverySecurityFixTest extends TestCase
             $table->string('code');
         });
 
-        Schema::create('gastosextras', function (Blueprint $table) {
-            $table->id();
-            $table->string('orderP');
-            $table->decimal('precio', 12, 2);
-            $table->string('tipoCargo');
-        });
+        if (! Schema::hasTable('gastosextras')) {
+            Schema::create('gastosextras', function (Blueprint $table) {
+                $table->id();
+                $table->string('orderP');
+                $table->decimal('precio', 12, 2);
+                $table->string('tipoCargo');
+            });
+        }
 
         Schema::create('location', function (Blueprint $table) {
             $table->id();

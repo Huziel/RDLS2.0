@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Cart;
 use App\Models\MercadoPagoAccount;
 use App\Models\MercadoPagoPayment;
+use App\Models\OrderPayment;
 use App\Models\PurchaseOrder;
 use App\Models\Store;
 use Illuminate\Support\Facades\Http;
@@ -55,14 +56,17 @@ class PaymentSecurityTest extends TestCase
         ]);
 
         $this->postJson("/api/v1/payments/orders/{$foreignOrder->id}/preference")->assertNotFound();
-        $this->postJson("/api/v1/payments/orders/{$order->id}/preference")
+        $this->withHeader('Idempotency-Key', 'owner-pref')->postJson("/api/v1/payments/orders/{$order->id}/preference")
             ->assertOk()
             ->assertJsonPath('data.order_id', 'OWN-ORDER')
             ->assertJsonPath('data.total', 70)
             ->assertJsonPath('data.public_key', 'public');
-        $this->postJson("/api/v1/payments/orders/{$order->id}/preference")->assertOk();
+        $this->withHeader('Idempotency-Key', 'different-http-retry')->postJson("/api/v1/payments/orders/{$order->id}/preference")->assertOk();
 
         $this->assertDatabaseCount('mercadopago', 1);
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($request) => is_string($request->header('X-Idempotency-Key')[0] ?? null)
+            && strlen($request->header('X-Idempotency-Key')[0]) === 64);
     }
 
     public function test_webhook_requires_a_valid_signature_and_verifies_the_remote_payment(): void
@@ -72,7 +76,7 @@ class PaymentSecurityTest extends TestCase
             'idLog' => $otherUser->id,
             'secretKey' => 'shared-store-access-token',
             'publicKey' => 'shared-public',
-            'merchantId' => '987',
+            'merchantId' => '986',
         ]);
         [$user, $store] = $this->signInStore('webhook@example.test');
         $order = $this->order($store, 'WEBHOOK-ORDER', 75, 5);
@@ -105,8 +109,16 @@ class PaymentSecurityTest extends TestCase
             'api.mercadopago.com/v1/payments/12345' => Http::response([
                 'external_reference' => $order->order,
                 'status' => 'approved',
-                'transaction_amount' => 80,
+                'transaction_amount' => 30,
                 'collector_id' => 987,
+                'currency_id' => 'MXN',
+            ]),
+            'api.mercadopago.com/v1/payments/12346' => Http::response([
+                'external_reference' => $order->order,
+                'status' => 'approved',
+                'transaction_amount' => 50,
+                'collector_id' => 987,
+                'currency_id' => 'MXN',
             ]),
         ]);
         $payload = ['type' => 'payment', 'user_id' => 987, 'data' => ['id' => '12345']];
@@ -121,15 +133,22 @@ class PaymentSecurityTest extends TestCase
             ->postJson('/api/v1/payments/webhook', $payload)
             ->assertOk()
             ->assertJsonPath('status', 'ok');
-        $this->withHeaders($this->signatureHeaders('12345', 'request-two', '101'))
+        $payload['data']['id'] = '12346';
+        $this->withHeaders($this->signatureHeaders('12346', 'request-two', '101'))
+            ->postJson('/api/v1/payments/webhook', $payload)
+            ->assertOk();
+        $payload['data']['id'] = '12345';
+        $this->withHeaders($this->signatureHeaders('12345', 'request-three', '102'))
             ->postJson('/api/v1/payments/webhook', $payload)
             ->assertOk();
 
         $this->assertDatabaseHas('mercadopago', ['orderP' => $order->order, 'status' => 1]);
         $this->assertDatabaseHas('cart', ['orderC' => $order->order, 'status' => 3]);
+        $this->assertDatabaseCount('order_provider_transactions', 2);
+        $this->assertEquals(80, (float) OrderPayment::where('order_id', $order->id)->value('amount_paid'));
     }
 
-    public function test_webhook_ignores_a_cancelled_order_without_mutating(): void
+    public function test_webhook_records_a_late_approved_payment_as_refund_pending(): void
     {
         [$user, $store] = $this->signInStore('webhook-cancel@example.test');
         $order = $this->order($store, 'WEBHOOK-CANCELLED', 60);
@@ -165,6 +184,7 @@ class PaymentSecurityTest extends TestCase
                 'status' => 'approved',
                 'transaction_amount' => 60,
                 'collector_id' => 987,
+                'currency_id' => 'MXN',
             ]),
         ]);
 
@@ -175,19 +195,17 @@ class PaymentSecurityTest extends TestCase
                 'data' => ['id' => '777'],
             ])
             ->assertOk()
-            ->assertJsonPath('status', 'ignored');
+            ->assertJsonPath('status', 'ok');
 
-        // Sin mutaciones: el pago sigue pendiente, el carrito intacto y la
-        // orden sigue cancelada (no resucitada a paid).
-        $this->assertDatabaseHas('mercadopago', ['orderP' => $order->order, 'status' => 0]);
-        $this->assertDatabaseHas('cart', ['orderC' => $order->order, 'status' => 2]);
+        $this->assertDatabaseHas('mercadopago', ['orderP' => $order->order, 'status' => 1]);
+        $this->assertDatabaseHas('order_payments', ['order_id' => $order->id, 'status' => 'refund_pending']);
         $this->assertDatabaseHas('ordencompra', [
             'order' => $order->order,
             'order_state' => PurchaseOrder::STATE_CANCELLED,
         ]);
     }
 
-    public function test_webhook_does_not_confirm_an_amount_mismatch(): void
+    public function test_webhook_preserves_a_partial_charge_without_marking_the_order_paid(): void
     {
         [$user, $store] = $this->signInStore('mismatch@example.test');
         $order = $this->order($store, 'MISMATCH-ORDER', 75);
@@ -207,15 +225,26 @@ class PaymentSecurityTest extends TestCase
                 'status' => 'approved',
                 'transaction_amount' => 74,
                 'collector_id' => 987,
+                'currency_id' => 'MXN',
             ]),
         ]);
 
         $this->withHeaders($this->signatureHeaders('999', 'request-mismatch', '100'))
             ->postJson('/api/v1/payments/webhook', ['type' => 'payment', 'user_id' => 987, 'data' => ['id' => '999']])
             ->assertOk()
-            ->assertJsonPath('status', 'ignored');
+            ->assertJsonPath('status', 'ok');
 
         $this->assertDatabaseHas('mercadopago', ['orderP' => $order->order, 'status' => 0]);
+        $this->assertDatabaseHas('order_provider_transactions', [
+            'order_id' => $order->id,
+            'provider_payment_id' => '999',
+            'amount' => 74,
+        ]);
+        $this->assertDatabaseHas('order_payments', [
+            'order_id' => $order->id,
+            'status' => 'pending',
+            'amount_paid' => 74,
+        ]);
     }
 
     public function test_saving_an_account_verifies_and_persists_the_merchant_identity(): void
@@ -239,7 +268,7 @@ class PaymentSecurityTest extends TestCase
 
     private function order(Store $store, string $reference, float $total, float $shipping = 0): PurchaseOrder
     {
-        return PurchaseOrder::create([
+        $order = PurchaseOrder::create([
             'order' => $reference,
             'serial' => $store->serial,
             'session' => 'payment-cart',
@@ -251,6 +280,24 @@ class PaymentSecurityTest extends TestCase
             'total' => $total,
             'totEnvio' => $shipping,
         ]);
+        OrderPayment::create([
+            'order_id' => $order->id,
+            'store_id' => $store->id,
+            'method' => 'mercado_pago',
+            'terms' => 'prepaid',
+            'status' => 'pending',
+            'currency' => 'MXN',
+            'products_amount' => $total,
+            'discount_amount' => 0,
+            'shipping_amount' => $shipping,
+            'extra_amount' => 0,
+            'amount_due' => $total + $shipping,
+            'amount_paid' => 0,
+            'amount_refunded' => 0,
+            'frozen_at' => now(),
+        ]);
+
+        return $order;
     }
 
     private function signatureHeaders(string $paymentId, string $requestId, string $timestamp): array

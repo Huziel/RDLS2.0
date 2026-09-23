@@ -40,7 +40,7 @@ class ProductAddonController extends Controller
 
         $validated = $request->validate([
             'nombre' => ['required', 'string', 'max:255'],
-            'precio' => ['required', 'numeric', 'min:0'],
+            'precio' => ['required', 'decimal:0,2', 'min:0', 'max:999999999999.99'],
             'categoria' => ['nullable', 'string'],
             'descripcion' => ['nullable', 'string'],
             'activo' => ['boolean'],
@@ -74,7 +74,7 @@ class ProductAddonController extends Controller
 
         $validated = $request->validate([
             'nombre' => ['sometimes', 'string', 'max:255'],
-            'precio' => ['sometimes', 'numeric', 'min:0'],
+            'precio' => ['sometimes', 'decimal:0,2', 'min:0', 'max:999999999999.99'],
             'categoria' => ['nullable', 'string'],
             'descripcion' => ['nullable', 'string'],
             'activo' => ['boolean'],

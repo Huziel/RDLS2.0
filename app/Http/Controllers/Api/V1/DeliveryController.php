@@ -15,6 +15,7 @@ use App\Models\PurchaseOrder;
 use App\Models\ShippingOrder;
 use App\Models\Store;
 use App\Models\User;
+use App\Services\OrderIdempotency;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -23,6 +24,9 @@ class DeliveryController extends Controller
     // Store owner: emit shipping order
     public function emitOrder(EmitShippingOrderRequest $request, $orderId)
     {
+        // Mismo patron que dispatchOrder: el superusuario (puro o dual) es
+        // solo lectura global; 403 antes de tocar cualquier fila.
+        $this->denySuperAdminMutation($request);
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
         $mode = $request->validated('assignment_mode');
@@ -76,15 +80,9 @@ class DeliveryController extends Controller
                 'fechaIn' => now()->format('Y-m-d H:i:s'),
                 'status' => $mode === 'direct' ? '1' : '0',
                 'assignment_mode' => $mode,
+                'departure_state' => 'not_departed',
+                'departed_at' => null,
             ]);
-
-            if ($mode === 'direct') {
-                // FASE 6B P0-2: nunca tocar renglones pagados (status='3', marca de pago legacy).
-                // La entrega se refleja en ordenenvio.status; el pago en order_state.
-                Cart::where('orderC', $purchaseOrder->order)
-                    ->where('status', '!=', '3')
-                    ->update(['status' => '5']);
-            }
 
             return ['shipping' => $shipping, 'created' => true];
         });
@@ -298,30 +296,33 @@ class DeliveryController extends Controller
 
         $linkedStoreIds = DeliveryLink::where('deliveryMan', $user->id)->where('bloqueo', '0')->pluck('store');
 
-        $orders = ShippingOrder::with(['purchaseOrder', 'store'])
+        $orders = ShippingOrder::with(['store.extra'])
             ->whereIn('tienda', $linkedStoreIds)
             ->where('assignment_mode', 'pool')
             ->whereNull('delivery')
             ->where('status', '0')
             ->whereDoesntHave('purchaseOrder', fn ($q) => $q->where('order_state', PurchaseOrder::STATE_CANCELLED))
-            ->get()
-            ->map(fn ($s) => [
-                'id' => $s->id,
-                'orden_compra_id' => $s->ordenCompra,
-                'tienda_id' => $s->tienda,
-                'fecha' => $s->fechaIn,
-                'order' => $s->purchaseOrder ? [
-                    'order_id' => $s->purchaseOrder->order,
-                    'cliente' => $s->purchaseOrder->nombre,
-                    'telefono' => $s->purchaseOrder->tel,
-                    'total' => (float) $s->purchaseOrder->total,
-                    'envio' => (float) $s->purchaseOrder->totEnvio,
-                    'lat' => $s->purchaseOrder->lat,
-                    'lng' => $s->purchaseOrder->long,
-                ] : null,
-            ]);
+            ->paginate(min(max((int) $request->input('per_page', 20), 1), 50));
+        $orders->through(fn ($s) => [
+            'shipping_id' => $s->id,
+            'store_id' => $s->tienda,
+            'store' => [
+                'serial' => $s->store?->serial,
+                'name' => $s->store?->extra?->nombreTienda,
+            ],
+            'fecha' => $s->fechaIn,
+            'assignment_mode' => $s->assignment_mode,
+        ]);
 
-        return response()->json(['data' => $orders]);
+        return response()->json([
+            'data' => $orders->items(),
+            'meta' => [
+                'current_page' => $orders->currentPage(),
+                'last_page' => $orders->lastPage(),
+                'per_page' => $orders->perPage(),
+                'total' => $orders->total(),
+            ],
+        ]);
     }
 
     // Deliver: accept order
@@ -365,11 +366,12 @@ class DeliveryController extends Controller
                 return ['error' => 'El envio ya no esta disponible.', 'status' => 409];
             }
 
-            $shipping->update(['delivery' => $user->id, 'status' => '1']);
-            // FASE 6B P0-2: no tocar renglones pagados (marca de pago legacy).
-            Cart::where('orderC', $purchaseOrder->order)
-                ->where('status', '!=', '3')
-                ->update(['status' => '5']);
+            $shipping->update([
+                'delivery' => $user->id,
+                'status' => '1',
+                'departure_state' => 'not_departed',
+                'departed_at' => null,
+            ]);
 
             return ['shipping' => $shipping->fresh(), 'idempotent' => false];
         });
@@ -382,6 +384,77 @@ class DeliveryController extends Controller
             'data' => $this->shippingData($result['shipping']),
             'idempotent' => $result['idempotent'],
             'message' => $result['idempotent'] ? 'Pedido ya aceptado.' : 'Pedido aceptado.',
+        ]);
+    }
+
+    // Store owner: explicit physical hand-off to the assigned rider.
+    public function dispatchOrder(Request $request, $shippingId)
+    {
+        $this->denySuperAdminMutation($request);
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
+        $actorId = (int) $request->user()->id;
+
+        $result = DB::transaction(function () use ($store, $shippingId, $actorId) {
+            $shippingRef = ShippingOrder::where('tienda', $store->id)->whereKey($shippingId)->firstOrFail();
+            $purchaseOrder = PurchaseOrder::where('serial', $store->serial)
+                ->whereKey($shippingRef->ordenCompra)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $shipping = ShippingOrder::whereKey($shippingId)
+                ->lockForUpdate()
+                ->firstOrFail();
+            if ((int) $shipping->tienda !== (int) $store->id) {
+                return ['error' => 'Envio no encontrado.', 'status' => 404];
+            }
+
+            if ($shipping->departure_state === 'departed') {
+                return ['shipping' => $shipping, 'idempotent' => true];
+            }
+            if ($purchaseOrder->isCancelled()) {
+                return ['error' => 'No se puede despachar una orden cancelada.', 'status' => 409];
+            }
+            if ($shipping->delivery === null || (string) $shipping->status !== '1') {
+                return ['error' => 'El envio debe estar asignado antes del despacho.', 'status' => 409];
+            }
+
+            $shipping->update([
+                'status' => '2',
+                'departure_state' => 'departed',
+                'departed_at' => now(),
+            ]);
+            Cart::where('orderC', $purchaseOrder->order)
+                ->where('status', '!=', '3')
+                ->update(['status' => '5']);
+            $idempotency = app(OrderIdempotency::class);
+            $hash = $idempotency->hash(['shipping_id' => $shipping->id]);
+            $eventKey = $idempotency->eventKey($purchaseOrder, 'dispatch', (string) $shipping->id);
+            if (! $idempotency->find($eventKey, $hash)) {
+                $idempotency->record(
+                    $purchaseOrder,
+                    (int) $store->id,
+                    $actorId,
+                    'store_owner',
+                    'order_dispatched',
+                    $eventKey,
+                    $hash,
+                    ['departure_state' => 'not_departed', 'status' => '1'],
+                    ['departure_state' => 'departed', 'status' => '2'],
+                    200,
+                    ['shipping_id' => $shipping->id],
+                );
+            }
+
+            return ['shipping' => $shipping->fresh(), 'idempotent' => false];
+        });
+
+        if (isset($result['error'])) {
+            return response()->json(['message' => $result['error']], $result['status']);
+        }
+
+        return response()->json([
+            'data' => $this->shippingData($result['shipping']),
+            'idempotent' => $result['idempotent'],
+            'message' => $result['idempotent'] ? 'El envio ya habia salido.' : 'Salida fisica confirmada.',
         ]);
     }
 
@@ -411,7 +484,7 @@ class DeliveryController extends Controller
             $purchaseOrder = PurchaseOrder::whereKey($shippingReference->ordenCompra)->lockForUpdate()->firstOrFail();
             $shipping = ShippingOrder::whereKey($shippingId)->lockForUpdate()->firstOrFail();
 
-            if ((int) $shipping->delivery !== (int) $user->id || (string) $shipping->status !== '1') {
+            if ((int) $shipping->delivery !== (int) $user->id || ! in_array((string) $shipping->status, ['1', '2'], true)) {
                 return ['error' => 'Envio no encontrado.', 'status' => 404];
             }
 
@@ -419,7 +492,16 @@ class DeliveryController extends Controller
                 return ['error' => 'Una asignacion directa no puede liberarse al pool.', 'status' => 409];
             }
 
-            $shipping->update(['delivery' => null, 'status' => '0']);
+            if ($shipping->departure_state === 'departed' || $shipping->departed_at !== null) {
+                return ['error' => 'Un envio que ya salio no puede liberarse al pool.', 'status' => 409];
+            }
+
+            $shipping->update([
+                'delivery' => null,
+                'status' => '0',
+                'departure_state' => 'not_departed',
+                'departed_at' => null,
+            ]);
             // FASE 6B P0-2: no tocar renglones pagados (marca de pago legacy).
             Cart::where('orderC', $purchaseOrder->order)
                 ->where('status', '!=', '3')
@@ -773,6 +855,13 @@ class DeliveryController extends Controller
             'fecha' => $shipping->fechaIn,
             'status' => $shipping->status,
             'assignment_mode' => $shipping->assignment_mode,
+            'departure_state' => $shipping->departure_state,
+            'departed_at' => $shipping->departed_at,
         ];
+    }
+
+    private function denySuperAdminMutation(Request $request): void
+    {
+        abort_if($request->user()->hasRole('super-admin'), 403, 'Superadmin es solo lectura para operaciones de entrega.');
     }
 }

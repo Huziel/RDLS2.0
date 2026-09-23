@@ -49,6 +49,7 @@ trait InteractsWithSalesSchema
             $table->string('order_state', 20)->nullable();
             $table->timestamp('cancelled_at')->nullable();
             $table->string('restock_key', 64)->nullable();
+            $table->string('delivery_type', 20)->nullable();
             $table->unique('order');
             $table->unique(['serial', 'checkout_key']);
             $table->unique('restock_key');
@@ -129,7 +130,7 @@ trait InteractsWithSalesSchema
             $table->unsignedBigInteger('idLog');
             $table->text('secretKey');
             $table->text('publicKey');
-            $table->string('merchantId')->nullable();
+            $table->string('merchantId')->nullable()->unique();
             $table->unique('idLog');
         });
 
@@ -141,6 +142,111 @@ trait InteractsWithSalesSchema
             $table->string('fecha')->nullable();
             $table->unsignedBigInteger('payment_id')->nullable();
             $table->unique('orderP');
+        });
+
+        Schema::create('gastosextras', function (Blueprint $table) {
+            $table->id();
+            $table->string('orderP', 100);
+            $table->decimal('precio', 14, 2);
+            $table->string('tipoCargo');
+        });
+
+        Schema::create('ordenenvio', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('tienda');
+            $table->unsignedBigInteger('delivery')->nullable();
+            $table->unsignedBigInteger('ordenCompra')->unique();
+            $table->string('fechaIn')->nullable();
+            $table->string('status')->default('0');
+            $table->string('assignment_mode')->default('pool');
+            $table->string('departure_state')->default('not_departed');
+            $table->timestamp('departed_at')->nullable();
+        });
+
+        Schema::create('order_payments', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('order_id')->unique();
+            $table->unsignedBigInteger('store_id');
+            $table->string('method');
+            $table->string('terms');
+            $table->string('status')->default('pending');
+            $table->string('currency', 3)->default('MXN');
+            $table->decimal('products_amount', 14, 2)->default(0);
+            $table->decimal('discount_amount', 14, 2)->default(0);
+            $table->decimal('shipping_amount', 14, 2)->default(0);
+            $table->decimal('extra_amount', 14, 2)->default(0);
+            $table->decimal('amount_due', 14, 2)->default(0);
+            $table->decimal('amount_paid', 14, 2)->default(0);
+            $table->decimal('amount_refunded', 14, 2)->default(0);
+            $table->timestamp('frozen_at')->nullable();
+            $table->timestamp('paid_at')->nullable();
+            $table->timestamp('refund_requested_at')->nullable();
+            $table->timestamp('refunded_at')->nullable();
+            $table->unsignedBigInteger('paid_by')->nullable();
+            $table->unsignedBigInteger('refunded_by')->nullable();
+            $table->string('bank_reference')->nullable();
+            $table->string('cash_reference')->nullable();
+            $table->string('refund_reference')->nullable();
+            $table->string('provider')->nullable();
+            $table->string('provider_payment_id')->nullable();
+            $table->timestamps();
+            $table->unique(['provider', 'provider_payment_id']);
+        });
+
+        Schema::create('order_payment_proofs', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('payment_id');
+            $table->unsignedBigInteger('store_id');
+            $table->string('disk');
+            $table->string('path')->unique();
+            $table->string('mime');
+            $table->unsignedBigInteger('size');
+            $table->string('sha256', 64);
+            $table->string('reference');
+            $table->timestamps();
+        });
+
+        Schema::create('order_provider_transactions', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('payment_id');
+            $table->unsignedBigInteger('store_id');
+            $table->unsignedBigInteger('order_id');
+            $table->string('provider', 40);
+            $table->string('provider_payment_id', 190);
+            $table->string('preference_id', 190)->nullable();
+            $table->decimal('amount', 14, 2);
+            $table->string('currency', 3)->default('MXN');
+            $table->string('remote_status', 50);
+            $table->timestamps();
+            $table->unique(['provider', 'provider_payment_id']);
+            $table->index(['payment_id', 'created_at']);
+        });
+
+        Schema::create('order_returns', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('order_id')->unique();
+            $table->unsignedBigInteger('store_id');
+            $table->string('status')->default('pending');
+            $table->unsignedBigInteger('received_by')->nullable();
+            $table->timestamp('received_at')->nullable();
+            $table->string('restock_key', 64)->nullable()->unique();
+            $table->timestamps();
+        });
+
+        Schema::create('order_audit_events', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('order_id');
+            $table->unsignedBigInteger('store_id');
+            $table->unsignedBigInteger('actor_id')->nullable();
+            $table->string('actor_type');
+            $table->string('event_type');
+            $table->string('event_key')->unique();
+            $table->string('request_hash', 64);
+            $table->json('previous')->nullable();
+            $table->json('next')->nullable();
+            $table->unsignedSmallInteger('response_status');
+            $table->json('response_data')->nullable();
+            $table->timestamp('created_at');
         });
 
         Schema::create('subscription_plans', function (Blueprint $table) {

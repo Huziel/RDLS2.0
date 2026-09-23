@@ -5,12 +5,13 @@ namespace Database\Seeders;
 use Illuminate\Database\Seeder;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
+use Spatie\Permission\PermissionRegistrar;
 
 class RoleAndPermissionSeeder extends Seeder
 {
     public function run(): void
     {
-        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
+        app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
         $permissions = [
             // Products
@@ -22,6 +23,10 @@ class RoleAndPermissionSeeder extends Seeder
             'orders.create',
             'orders.read',
             'orders.update-status',
+            'orders.payments.verify',
+            'orders.refunds.verify',
+            'orders.returns.verify',
+            'orders.payments.audit',
             // POS
             'pos.use',
             'pos.history',
@@ -29,6 +34,8 @@ class RoleAndPermissionSeeder extends Seeder
             'coupons.manage',
             // Delivery management (store owner side)
             'delivery.manage',
+            'orders.dispatch',
+            'payments.mercado-pago.manage',
             'delivery.block',
             // Appointments
             'appointments.manage',
@@ -65,9 +72,11 @@ class RoleAndPermissionSeeder extends Seeder
         $owner->syncPermissions([
             'products.create', 'products.read', 'products.update', 'products.delete',
             'orders.create', 'orders.read', 'orders.update-status',
+            'orders.payments.verify', 'orders.refunds.verify',
+            'orders.returns.verify', 'orders.payments.audit',
             'pos.use', 'pos.history',
             'coupons.manage',
-            'delivery.manage', 'delivery.block',
+            'delivery.manage', 'delivery.block', 'orders.dispatch', 'payments.mercado-pago.manage',
             'appointments.manage',
             'barters.manage',
             'invoicing.use',
@@ -81,6 +90,9 @@ class RoleAndPermissionSeeder extends Seeder
             'delivery.accept', 'delivery.complete', 'delivery.cancel',
             'delivery.profile', 'delivery.wallet', 'delivery.location',
         ]);
+
+        $superAdmin = Role::firstOrCreate(['name' => 'super-admin', 'guard_name' => 'web']);
+        $superAdmin->givePermissionTo(['orders.read', 'orders.payments.audit']);
 
         // Customer role
         $customer = Role::firstOrCreate(['name' => 'customer', 'guard_name' => 'web']);

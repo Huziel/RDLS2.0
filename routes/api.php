@@ -25,6 +25,7 @@ use App\Http\Controllers\Api\V1\LoyaltyController;
 use App\Http\Controllers\Api\V1\MarketplaceController;
 use App\Http\Controllers\Api\V1\MediaController;
 use App\Http\Controllers\Api\V1\OrderController;
+use App\Http\Controllers\Api\V1\OrderFinanceController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PosController;
 use App\Http\Controllers\Api\V1\ProductAddonController;
@@ -141,6 +142,8 @@ Route::prefix('v1')->group(function () {
             Route::post('orders/{order}/emit-shipping', [DeliveryController::class, 'emitOrder']);
             Route::get('delivery/linked', [DeliveryController::class, 'linkedDeliverers']);
         });
+        Route::post('delivery/orders/{shipping}/dispatch', [DeliveryController::class, 'dispatchOrder'])
+            ->middleware('permission:orders.dispatch');
         Route::put('delivery/linked/{link}/toggle-block', [DeliveryController::class, 'toggleBlock'])
             ->middleware('role_or_permission:super-admin|delivery.block');
 
@@ -176,9 +179,9 @@ Route::prefix('v1')->group(function () {
             ->middleware('role_or_permission:deliver|delivery.complete');
 
         // Payments
-        Route::get('payments/account', [PaymentController::class, 'getAccount']);
-        Route::post('payments/account', [PaymentController::class, 'saveAccount']);
-        Route::post('payments/orders/{order}/preference', [PaymentController::class, 'createPreference']);
+        Route::get('payments/account', [PaymentController::class, 'getAccount'])->middleware('permission:payments.mercado-pago.manage');
+        Route::post('payments/account', [PaymentController::class, 'saveAccount'])->middleware('permission:payments.mercado-pago.manage');
+        Route::post('payments/orders/{order}/preference', [PaymentController::class, 'createPreference'])->middleware('permission:payments.mercado-pago.manage');
 
         // Appointments
         Route::get('appointments/availability', [AppointmentController::class, 'availability']);
@@ -286,11 +289,18 @@ Route::prefix('v1')->group(function () {
         Route::delete('coupons/{id}', [CouponController::class, 'destroy']);
 
         // Orders (store owner)
-        Route::get('orders', [OrderController::class, 'index']);
-        Route::get('orders/{id}', [OrderController::class, 'show']);
-        Route::put('orders/{id}/confirm-payment', [OrderController::class, 'confirmPayment']);
-        Route::post('orders/{id}/cancel', [OrderController::class, 'cancel']);
-        Route::post('orders/{id}/extra-charge', [OrderController::class, 'addExtraCharge']);
+        Route::get('orders', [OrderController::class, 'index'])->middleware('permission:orders.read');
+        Route::get('orders/{id}', [OrderController::class, 'show'])->middleware('permission:orders.read');
+        Route::put('orders/{id}/confirm-payment', [OrderController::class, 'confirmPayment'])->middleware('permission:orders.payments.verify');
+        Route::post('orders/{id}/cancel', [OrderController::class, 'cancel'])->middleware('permission:orders.update-status');
+        Route::post('orders/{id}/extra-charge', [OrderController::class, 'addExtraCharge'])->middleware('permission:orders.payments.verify');
+        Route::post('orders/{id}/refund', [OrderFinanceController::class, 'refund'])->middleware('permission:orders.refunds.verify');
+        Route::post('orders/{id}/return', [OrderFinanceController::class, 'receiveReturn'])->middleware('permission:orders.returns.verify');
+        Route::get('orders/{id}/proofs', [OrderFinanceController::class, 'proofs'])->middleware('permission:orders.payments.audit');
+        Route::get('orders/{id}/proofs/{proof}', [OrderFinanceController::class, 'download'])->middleware('permission:orders.payments.audit');
+        Route::get('orders/{id}/audit', [OrderFinanceController::class, 'audit'])->middleware('permission:orders.payments.audit');
+        Route::get('admin/orders/{id}/audit', [OrderFinanceController::class, 'audit'])->middleware('permission:orders.payments.audit');
+        Route::get('admin/orders/{id}/proofs/{proof}', [OrderFinanceController::class, 'adminDownload'])->middleware('permission:orders.payments.audit');
 
         // Orders (customer)
         Route::get('my-orders', [OrderController::class, 'myOrders']);
@@ -306,6 +316,8 @@ Route::prefix('v1')->group(function () {
 
     // Public checkout (creates order)
     Route::post('stores/{storeSerial}/checkout', [OrderController::class, 'checkout']);
+    Route::post('stores/{serial}/orders/{order}/transfer-proof', [OrderFinanceController::class, 'submitProof'])
+        ->middleware('throttle:proof-uploads');
 
     // Public MercadoPago preference, status and cancellation (session-based)
     Route::post('stores/{storeSerial}/orders/{order}/pay', [OrderController::class, 'publicPaymentPreference']);

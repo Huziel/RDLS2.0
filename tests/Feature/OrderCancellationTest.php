@@ -6,6 +6,7 @@ use App\Models\Cart;
 use App\Models\Client;
 use App\Models\LoyaltyConfig;
 use App\Models\LoyaltyPoint;
+use App\Models\OrderPayment;
 use App\Models\PurchaseOrder;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\InteractsWithSalesSchema;
@@ -29,7 +30,7 @@ class OrderCancellationTest extends TestCase
         $orderRef = $this->checkout($store->serial, 'cancel-cart');
         $this->assertDatabaseHas('stock', ['idProd' => $product->id, 'stock' => 0]);
 
-        $first = $this->withHeader('X-Cart-Token', 'cancel-cart')
+        $first = $this->withHeaders(['X-Cart-Token' => 'cancel-cart', 'Idempotency-Key' => 'cancel-order'])
             ->postJson("/api/v1/stores/{$store->serial}/orders/{$orderRef}/cancel")
             ->assertOk()
             ->json('data');
@@ -43,7 +44,7 @@ class OrderCancellationTest extends TestCase
             'restock_key' => hash('sha256', 'restock:'.$orderRef),
         ]);
 
-        $second = $this->withHeader('X-Cart-Token', 'cancel-cart')
+        $second = $this->withHeaders(['X-Cart-Token' => 'cancel-cart', 'Idempotency-Key' => 'cancel-order'])
             ->postJson("/api/v1/stores/{$store->serial}/orders/{$orderRef}/cancel")
             ->assertOk()
             ->json('data');
@@ -75,6 +76,7 @@ class OrderCancellationTest extends TestCase
         $this->cart($product->id, $store->createdby, $store->serial, 'paid-cart', 1, 10);
         $orderRef = $this->checkout($store->serial, 'paid-cart');
         PurchaseOrder::where('order', $orderRef)->update(['order_state' => PurchaseOrder::STATE_PAID]);
+        OrderPayment::where('order_id', PurchaseOrder::where('order', $orderRef)->value('id'))->update(['status' => 'paid', 'amount_paid' => 10, 'frozen_at' => now()]);
 
         $this->withHeader('X-Cart-Token', 'paid-cart')
             ->postJson("/api/v1/stores/{$store->serial}/orders/{$orderRef}/cancel")
@@ -98,6 +100,7 @@ class OrderCancellationTest extends TestCase
         // CONTRATO de salida del race: 422 y stock jamas repuesto.
         DB::transaction(function () use ($orderRef, $store) {
             PurchaseOrder::where('order', $orderRef)->update(['order_state' => PurchaseOrder::STATE_PAID]);
+            OrderPayment::where('order_id', PurchaseOrder::where('order', $orderRef)->value('id'))->update(['status' => 'paid', 'amount_paid' => 90, 'frozen_at' => now()]);
 
             $this->withHeader('X-Cart-Token', 'race-cart')
                 ->postJson("/api/v1/stores/{$store->serial}/orders/{$orderRef}/cancel")
@@ -123,8 +126,9 @@ class OrderCancellationTest extends TestCase
         $orderRef = $this->checkout($store->serial, 'admin-cart');
         $orderId = PurchaseOrder::where('order', $orderRef)->value('id');
         PurchaseOrder::where('order', $orderRef)->update(['order_state' => PurchaseOrder::STATE_PAID]);
+        OrderPayment::where('order_id', $orderId)->update(['status' => 'paid', 'amount_paid' => 30, 'frozen_at' => now()]);
 
-        $result = $this->postJson("/api/v1/orders/{$orderId}/cancel")
+        $result = $this->withHeader('Idempotency-Key', 'admin-cancel')->postJson("/api/v1/orders/{$orderId}/cancel")
             ->assertOk()
             ->json('data');
         $this->assertTrue($result['refund_required']);
@@ -147,7 +151,7 @@ class OrderCancellationTest extends TestCase
         $orderRef = $this->checkout($store->serial, 'loyal-cart', '5558009000');
         $this->assertDatabaseHas('loyalty_points', ['store_id' => $store->id, 'client_id' => $client->id, 'points' => 15]);
 
-        $this->withHeader('X-Cart-Token', 'loyal-cart')
+        $this->withHeaders(['X-Cart-Token' => 'loyal-cart', 'Idempotency-Key' => 'loyal-cancel'])
             ->postJson("/api/v1/stores/{$store->serial}/orders/{$orderRef}/cancel")
             ->assertOk();
 
@@ -184,7 +188,7 @@ class OrderCancellationTest extends TestCase
         LoyaltyPoint::redeemPoints($store->id, $client->id, 50, 'checkout:'.hash('sha256', 'redeem-flow'), 'checkout_redeem');
         $this->assertDatabaseHas('loyalty_points', ['client_id' => $client->id, 'points' => 50]);
 
-        $this->postJson("/api/v1/orders/{$order->id}/cancel")
+        $this->withHeader('Idempotency-Key', 'redeem-cancel')->postJson("/api/v1/orders/{$order->id}/cancel")
             ->assertOk()
             ->assertJsonPath('data.reversed', true);
 
@@ -206,8 +210,8 @@ class OrderCancellationTest extends TestCase
         $orderRef = $this->checkout($store->serial, 'twice-cart');
         $orderId = PurchaseOrder::where('order', $orderRef)->value('id');
 
-        $this->postJson("/api/v1/orders/{$orderId}/cancel")->assertOk();
-        $second = $this->postJson("/api/v1/orders/{$orderId}/cancel")->assertOk()->json('data');
+        $this->withHeader('Idempotency-Key', 'twice-cancel')->postJson("/api/v1/orders/{$orderId}/cancel")->assertOk();
+        $second = $this->withHeader('Idempotency-Key', 'twice-cancel')->postJson("/api/v1/orders/{$orderId}/cancel")->assertOk()->json('data');
         $this->assertTrue($second['idempotent']);
         $this->assertDatabaseHas('stock', ['idProd' => $product->id, 'stock' => 3]);
         $this->assertDatabaseCount('ordencompra', 1);
@@ -215,11 +219,12 @@ class OrderCancellationTest extends TestCase
 
     private function checkout(string $serial, string $token, string $phone = '5551112222'): string
     {
-        return $this->withHeader('X-Cart-Token', $token)
+        return $this->withHeaders(['X-Cart-Token' => $token, 'Idempotency-Key' => 'checkout-'.$token])
             ->postJson("/api/v1/stores/{$serial}/checkout", [
                 'nombre' => 'Cliente',
                 'telefono' => $phone,
                 'tipo_envio' => 'pickup',
+                'payment_method' => 'cash',
             ])
             ->assertCreated()
             ->json('data.order_id');

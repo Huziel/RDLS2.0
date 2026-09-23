@@ -181,6 +181,16 @@ trait InteractsWithInventorySchema
             'createdby' => $email,
         ]);
 
+        $permissions = array_unique(array_merge($permissions, [
+            'orders.read',
+            'orders.update-status',
+            'orders.payments.verify',
+            'orders.refunds.verify',
+            'orders.returns.verify',
+            'orders.payments.audit',
+            'orders.dispatch',
+            'payments.mercado-pago.manage',
+        ]));
         foreach ($permissions as $permissionName) {
             $permission = Permission::findOrCreate($permissionName, 'web');
             $user->givePermissionTo($permission);

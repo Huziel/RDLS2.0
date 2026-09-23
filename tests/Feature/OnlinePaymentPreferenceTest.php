@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Cart;
 use App\Models\MercadoPagoAccount;
 use App\Models\MercadoPagoPayment;
+use App\Models\OrderPayment;
 use App\Models\PurchaseOrder;
 use App\Models\Store;
 use Illuminate\Support\Facades\Http;
@@ -41,7 +42,7 @@ class OnlinePaymentPreferenceTest extends TestCase
             ]),
         ]);
 
-        $response = $this->withHeader('X-Cart-Token', 'online-cart')
+        $response = $this->withHeaders(['X-Cart-Token' => 'online-cart', 'Idempotency-Key' => 'mp-pref'])
             ->postJson("/api/v1/stores/{$store->serial}/orders/{$order->order}/pay")
             ->assertOk();
 
@@ -50,16 +51,16 @@ class OnlinePaymentPreferenceTest extends TestCase
 
         $this->assertDatabaseHas('mercadopago', ['orderP' => 'MP-PREF', 'status' => 0, 'preference' => 'PREFERENCE-1']);
 
-        Http::assertSent(function ($request) use ($order, $product) {
+        Http::assertSent(function ($request) use ($order) {
             return str_contains($request->url(), '/checkout/preferences')
                 && $request['external_reference'] === $order->order
                 && $request['notification_url'] === rtrim(config('app.url'), '/').'/api/v1/payments/webhook'
                 && $request['binary_mode'] === true
-                && $request['items'][0]['id'] === (string) $product->id
+                && $request['items'][0]['id'] === (string) $order->id
                 && (float) $request['items'][0]['unit_price'] === 50.0;
         });
         Http::assertSent(fn ($request) => str_contains($request->url(), '/checkout/preferences')
-            && $request->hasHeader('Idempotency-Key'));
+            && $request->hasHeader('X-Idempotency-Key'));
     }
 
     public function test_public_pay_is_scoped_by_cart_token_and_store(): void
@@ -99,6 +100,7 @@ class OnlinePaymentPreferenceTest extends TestCase
         $paid = $this->orderWithItem($store, $product->id, 'MP-PAID', 'paid-cart', 10);
         $cancelled = $this->orderWithItem($store, $product->id, 'MP-CANCEL', 'cancel-cart', 10);
         PurchaseOrder::where('order', $paid->order)->update(['order_state' => PurchaseOrder::STATE_PAID]);
+        OrderPayment::where('order_id', $paid->id)->update(['status' => 'paid', 'amount_paid' => 10, 'frozen_at' => now()]);
         PurchaseOrder::where('order', $cancelled->order)->update(['order_state' => PurchaseOrder::STATE_CANCELLED]);
 
         $this->withHeader('X-Cart-Token', 'paid-cart')
@@ -136,13 +138,14 @@ class OnlinePaymentPreferenceTest extends TestCase
             ->assertJsonPath('data.status', 'pending');
 
         PurchaseOrder::where('order', $order->order)->update(['order_state' => PurchaseOrder::STATE_PAID]);
+        OrderPayment::where('order_id', $order->id)->update(['status' => 'paid', 'amount_paid' => 20, 'frozen_at' => now()]);
         MercadoPagoPayment::where('orderP', $order->order)->update(['status' => 1, 'payment_id' => 4242]);
 
         $this->withHeader('X-Cart-Token', 'status-cart')
             ->getJson("/api/v1/stores/{$store->serial}/orders/{$order->order}/status")
             ->assertOk()
             ->assertJsonPath('data.status', 'paid')
-            ->assertJsonPath('data.payment.payment_id', 4242);
+            ->assertJsonMissingPath('data.payment.payment_id');
 
         $this->withHeader('X-Cart-Token', 'status-cart')
             ->getJson("/api/v1/public/orders/{$order->order}")
@@ -174,6 +177,21 @@ class OnlinePaymentPreferenceTest extends TestCase
             'cant' => 1,
             'status' => 2,
             'orderC' => $reference,
+        ]);
+        OrderPayment::create([
+            'order_id' => $order->id,
+            'store_id' => $store->id,
+            'method' => 'mercado_pago',
+            'terms' => 'prepaid',
+            'status' => 'pending',
+            'currency' => 'MXN',
+            'products_amount' => $price,
+            'discount_amount' => 0,
+            'shipping_amount' => 0,
+            'extra_amount' => 0,
+            'amount_due' => $price,
+            'amount_paid' => 0,
+            'amount_refunded' => 0,
         ]);
 
         return $order;

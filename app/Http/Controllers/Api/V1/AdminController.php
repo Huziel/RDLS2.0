@@ -3,16 +3,69 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\ApartadoConfig;
+use App\Models\Appointment;
+use App\Models\Barter;
+use App\Models\BarterProduct;
+use App\Models\Cart;
+use App\Models\CartAddon;
+use App\Models\ChatConversation;
+use App\Models\ChatMessage;
+use App\Models\Client;
+use App\Models\Coupon;
+use App\Models\CouponProduct;
+use App\Models\DeliveryEvidence;
+use App\Models\DeliveryLink;
+use App\Models\DeliveryLocation;
+use App\Models\DeliveryPhoto;
+use App\Models\DeliveryProfile;
+use App\Models\DeliveryWallet;
+use App\Models\DeviceToken;
+use App\Models\ExtraCharge;
+use App\Models\LoyaltyConfig;
+use App\Models\LoyaltyPoint;
+use App\Models\LoyaltyTransaction;
+use App\Models\MediaPhoto;
+use App\Models\MediaVideo;
+use App\Models\OrderAuditEvent;
+use App\Models\OrderPayment;
+use App\Models\OrderPaymentProof;
+use App\Models\OrderProviderTransaction;
+use App\Models\OrderReturn;
+use App\Models\PaidModule;
+use App\Models\PosOrder;
+use App\Models\PosOrderDetail;
+use App\Models\PosOrderDetailHistory;
+use App\Models\PosOrderHistory;
+use App\Models\Product;
+use App\Models\ProductAddon;
+use App\Models\ProductBarcode;
+use App\Models\ProductImage;
+use App\Models\ProductStock;
+use App\Models\PurchaseOrder;
+use App\Models\QrCode;
+use App\Models\ShippingForm;
+use App\Models\ShippingOrder;
 use App\Models\SiteSetting;
+use App\Models\Store;
+use App\Models\StoreColor;
+use App\Models\StoreExtra;
+use App\Models\StoreFeature;
+use App\Models\StorePassword;
+use App\Models\StoreRating;
+use App\Models\StoreTheme;
 use App\Models\User;
+use App\Models\VerificationCode;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class AdminController extends Controller
 {
     private function requireSuperAdmin(Request $request)
     {
-        if (!$request->user()?->hasRole('super-admin')) {
+        if (! $request->user()?->hasRole('super-admin')) {
             abort(403, 'No autorizado.');
         }
     }
@@ -21,6 +74,7 @@ class AdminController extends Controller
     {
         $this->requireSuperAdmin($request);
         $settings = SiteSetting::getSettings();
+
         return response()->json(['data' => $settings]);
     }
 
@@ -39,12 +93,14 @@ class AdminController extends Controller
         ]);
 
         $settings->update($data);
+
         return response()->json(['data' => $settings->fresh(), 'message' => 'Configuracion guardada.']);
     }
 
     public function publicSiteSettings()
     {
         $settings = SiteSetting::getSettings();
+
         return response()->json(['data' => [
             'site_name' => $settings->site_name,
             'site_logo' => $settings->site_logo,
@@ -62,20 +118,28 @@ class AdminController extends Controller
     public function users(Request $request)
     {
         $u = $request->user();
-        if (!$u->hasRole('super-admin')) return response()->json(['message' => 'No autorizado.'], 403);
+        if (! $u->hasRole('super-admin')) {
+            return response()->json(['message' => 'No autorizado.'], 403);
+        }
 
         $query = User::with('store')->with('roles');
 
-        if ($request->has('type') && $request->type !== 'all') $query->where('type', $request->type);
-        if ($request->has('status') && $request->status !== 'all') $query->where('active', $request->status);
+        if ($request->has('type') && $request->type !== 'all') {
+            $query->where('type', $request->type);
+        }
+        if ($request->has('status') && $request->status !== 'all') {
+            $query->where('active', $request->status);
+        }
         if ($request->has('search')) {
-            $s = '%' . $request->search . '%';
-            $query->where(function ($q) use ($s) { $q->where('name', 'like', $s)->orWhere('id', 'like', $s); });
+            $s = '%'.$request->search.'%';
+            $query->where(function ($q) use ($s) {
+                $q->where('name', 'like', $s)->orWhere('id', 'like', $s);
+            });
         }
 
         $users = $query->orderByDesc('id')->paginate($request->get('per_page', 20));
 
-        $result = $users->through(fn($u) => [
+        $result = $users->through(fn ($u) => [
             'id' => $u->id, 'name' => $u->name, 'type' => $u->type,
             'active' => (int) $u->active,
             'roles' => $u->getRoleNames(),
@@ -89,36 +153,48 @@ class AdminController extends Controller
 
     public function toggleActive(Request $request, $id)
     {
-        if (!$request->user()->hasRole('super-admin')) return response()->json(['message' => 'No autorizado.'], 403);
+        if (! $request->user()->hasRole('super-admin')) {
+            return response()->json(['message' => 'No autorizado.'], 403);
+        }
         $user = User::findOrFail($id);
         $user->active = $user->active ? 0 : 1;
         $user->save();
+
         return response()->json(['message' => $user->active ? 'Usuario activado.' : 'Usuario desactivado.', 'active' => $user->active]);
     }
 
     public function changePassword(Request $request, $id)
     {
-        if (!$request->user()->hasRole('super-admin')) return response()->json(['message' => 'No autorizado.'], 403);
+        if (! $request->user()->hasRole('super-admin')) {
+            return response()->json(['message' => 'No autorizado.'], 403);
+        }
         $request->validate(['password' => 'required|string|min:6']);
         $user = User::findOrFail($id);
         $user->keyvalue = Hash::make($request->password);
         $user->save();
+
         return response()->json(['message' => 'Contraseña actualizada.']);
     }
 
     public function destroy(Request $request, $id)
     {
-        if (!$request->user()->hasRole('super-admin')) return response()->json(['message' => 'No autorizado.'], 403);
+        if (! $request->user()->hasRole('super-admin')) {
+            return response()->json(['message' => 'No autorizado.'], 403);
+        }
         $user = User::findOrFail($id);
         $user->store()->delete();
         $user->tokens()->delete();
         $user->delete();
+
         return response()->json(['message' => 'Usuario eliminado.']);
     }
 
     public function stats(Request $request)
     {
-        if (!$request->user()->hasRole('super-admin')) return response()->json(['message' => 'No autorizado.'], 403);
+        if (! $request->user()->hasRole('super-admin')) {
+            return response()->json(['message' => 'No autorizado.'], 403);
+        }
+
         return response()->json(['data' => [
             'total' => User::count(),
             'owners' => User::where('type', 1)->count(),
@@ -131,76 +207,96 @@ class AdminController extends Controller
 
     public function cleanData(Request $request)
     {
-        if (!$request->user()->hasRole('super-admin')) return response()->json(['message' => 'No autorizado.'], 403);
+        if (! $request->user()->hasRole('super-admin')) {
+            return response()->json(['message' => 'No autorizado.'], 403);
+        }
 
         $keepUsers = $request->input('keep_users', []);
         $keepStores = $request->input('keep_stores', []);
 
-        \Illuminate\Support\Facades\DB::transaction(function () use ($keepUsers, $keepStores) {
-            \App\Models\ChatMessage::query()->delete();
-            \App\Models\ChatConversation::query()->delete();
-            \App\Models\LoyaltyTransaction::query()->delete();
-            \App\Models\LoyaltyPoint::query()->delete();
-            \App\Models\LoyaltyConfig::query()->delete();
-            \App\Models\DeliveryEvidence::query()->delete();
-            \App\Models\DeliveryLocation::query()->delete();
-            \App\Models\ShippingOrder::query()->delete();
-            \App\Models\DeliveryLink::query()->delete();
-            \App\Models\DeliveryPhoto::query()->delete();
-            \App\Models\DeliveryProfile::query()->delete();
-            \App\Models\DeliveryWallet::query()->delete();
-            \App\Models\ExtraCharge::query()->delete();
-            \App\Models\ShippingForm::query()->delete();
-            \App\Models\VerificationCode::query()->delete();
-            \App\Models\PurchaseOrder::query()->delete();
-            \App\Models\PosOrderDetailHistory::query()->delete();
-            \App\Models\PosOrderHistory::query()->delete();
-            \App\Models\PosOrderDetail::query()->delete();
-            \App\Models\PosOrder::query()->delete();
-            \App\Models\CartAddon::query()->delete();
-            \App\Models\Cart::query()->delete();
-            \App\Models\Appointment::query()->delete();
-            \App\Models\BarterProduct::query()->delete();
-            \App\Models\Barter::query()->delete();
-            \App\Models\Client::query()->delete();
-            \App\Models\CouponProduct::query()->delete();
-            \App\Models\Coupon::query()->delete();
-            \App\Models\StoreRating::query()->delete();
-            \App\Models\QrCode::query()->delete();
-            \App\Models\ProductAddon::query()->delete();
-            \App\Models\ProductBarcode::query()->delete();
-            \App\Models\ProductImage::query()->delete();
-            \App\Models\ProductStock::query()->delete();
-            \App\Models\Product::query()->delete();
+        DB::transaction(function () use ($keepUsers, $keepStores) {
+            // Re-validar la proteccion financiera DENTRO de la transaccion y con
+            // locks, inmediatamente antes del borrado: una fila financiera o de
+            // auditoria inyectada entre el guard inicial y la limpieza aborta
+            // TODA la operacion. abort() lanza una HttpException que revierte la
+            // transaccion (sin borrados parciales ni filas infiltradas) y
+            // responde 409.
+            $protectedFinanceExists = OrderAuditEvent::query()->lockForUpdate()->exists()
+                || OrderPaymentProof::query()->lockForUpdate()->exists()
+                || OrderProviderTransaction::query()->lockForUpdate()->exists()
+                || OrderReturn::query()->lockForUpdate()->exists()
+                || OrderPayment::query()->lockForUpdate()->exists();
+            if ($protectedFinanceExists) {
+                abort(409, 'La limpieza se rechazo porque existen registros financieros o de auditoria protegidos.');
+            }
+
+            ChatMessage::query()->delete();
+            ChatConversation::query()->delete();
+            LoyaltyTransaction::query()->delete();
+            LoyaltyPoint::query()->delete();
+            LoyaltyConfig::query()->delete();
+            DeliveryEvidence::query()->delete();
+            DeliveryLocation::query()->delete();
+            ShippingOrder::query()->delete();
+            DeliveryLink::query()->delete();
+            DeliveryPhoto::query()->delete();
+            DeliveryProfile::query()->delete();
+            DeliveryWallet::query()->delete();
+            ExtraCharge::query()->delete();
+            ShippingForm::query()->delete();
+            VerificationCode::query()->delete();
+            PurchaseOrder::query()->delete();
+            PosOrderDetailHistory::query()->delete();
+            PosOrderHistory::query()->delete();
+            PosOrderDetail::query()->delete();
+            PosOrder::query()->delete();
+            CartAddon::query()->delete();
+            Cart::query()->delete();
+            Appointment::query()->delete();
+            BarterProduct::query()->delete();
+            Barter::query()->delete();
+            Client::query()->delete();
+            CouponProduct::query()->delete();
+            Coupon::query()->delete();
+            StoreRating::query()->delete();
+            QrCode::query()->delete();
+            ProductAddon::query()->delete();
+            ProductBarcode::query()->delete();
+            ProductImage::query()->delete();
+            ProductStock::query()->delete();
+            Product::query()->delete();
 
             $superAdminIds = User::role('super-admin')->pluck('id')->toArray();
             $superAdminEmails = User::role('super-admin')->pluck('name')->toArray();
             $protectedIds = array_merge($superAdminIds, $keepUsers);
 
             // Protect super-admin stores
-            $superAdminStoreIds = \App\Models\Store::whereIn('createdby', $superAdminEmails)->pluck('id')->toArray();
+            $superAdminStoreIds = Store::whereIn('createdby', $superAdminEmails)->pluck('id')->toArray();
             $allProtectedStores = array_merge($superAdminStoreIds, $keepStores);
 
-            $storeQuery = \App\Models\Store::query();
-            if (!empty($allProtectedStores)) $storeQuery->whereNotIn('id', $allProtectedStores);
+            $storeQuery = Store::query();
+            if (! empty($allProtectedStores)) {
+                $storeQuery->whereNotIn('id', $allProtectedStores);
+            }
             $storeQuery->delete();
-            \App\Models\StoreExtra::query()->delete();
-            \App\Models\StoreColor::query()->delete();
-            \App\Models\StoreTheme::query()->delete();
-            \App\Models\StorePassword::query()->delete();
-            \App\Models\StoreFeature::query()->delete();
+            StoreExtra::query()->delete();
+            StoreColor::query()->delete();
+            StoreTheme::query()->delete();
+            StorePassword::query()->delete();
+            StoreFeature::query()->delete();
 
             User::whereNotIn('id', $protectedIds)->delete();
 
-            \Laravel\Sanctum\PersonalAccessToken::query()->delete();
-            \App\Models\MediaPhoto::query()->delete();
-            \App\Models\MediaVideo::query()->delete();
-            \App\Models\DeviceToken::query()->delete();
-            \App\Models\PaidModule::query()->delete();
-            \App\Models\ApartadoConfig::query()->delete();
+            PersonalAccessToken::query()->delete();
+            MediaPhoto::query()->delete();
+            MediaVideo::query()->delete();
+            DeviceToken::query()->delete();
+            PaidModule::query()->delete();
+            ApartadoConfig::query()->delete();
         });
 
         $remaining = User::count();
+
         return response()->json(['message' => "Datos de prueba eliminados. Quedan $remaining usuarios.", 'data' => ['remaining_users' => $remaining]]);
     }
 }
