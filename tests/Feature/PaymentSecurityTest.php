@@ -129,6 +129,64 @@ class PaymentSecurityTest extends TestCase
         $this->assertDatabaseHas('cart', ['orderC' => $order->order, 'status' => 3]);
     }
 
+    public function test_webhook_ignores_a_cancelled_order_without_mutating(): void
+    {
+        [$user, $store] = $this->signInStore('webhook-cancel@example.test');
+        $order = $this->order($store, 'WEBHOOK-CANCELLED', 60);
+        $order->update(['order_state' => PurchaseOrder::STATE_CANCELLED]);
+        MercadoPagoAccount::create([
+            'idLog' => $user->id,
+            'secretKey' => 'store-access-token',
+            'publicKey' => 'public',
+            'merchantId' => '987',
+        ]);
+        Cart::create([
+            'product' => 1,
+            'price' => 60,
+            'dom' => $store->createdby,
+            'user' => 'webhook-cancel-cart',
+            'variation' => $store->serial,
+            'cant' => 1,
+            'status' => 2,
+            'orderC' => $order->order,
+        ]);
+        MercadoPagoPayment::create([
+            'orderP' => $order->order,
+            'status' => 0,
+            'preference' => '',
+            'fecha' => now()->format('Y-m-d H:i:s'),
+        ]);
+        config([
+            'services.mercadopago.webhook_secret' => 'webhook-secret',
+        ]);
+        Http::fake([
+            'api.mercadopago.com/v1/payments/777' => Http::response([
+                'external_reference' => $order->order,
+                'status' => 'approved',
+                'transaction_amount' => 60,
+                'collector_id' => 987,
+            ]),
+        ]);
+
+        $this->withHeaders($this->signatureHeaders('777', 'request-cancelled', '100'))
+            ->postJson('/api/v1/payments/webhook', [
+                'type' => 'payment',
+                'user_id' => 987,
+                'data' => ['id' => '777'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'ignored');
+
+        // Sin mutaciones: el pago sigue pendiente, el carrito intacto y la
+        // orden sigue cancelada (no resucitada a paid).
+        $this->assertDatabaseHas('mercadopago', ['orderP' => $order->order, 'status' => 0]);
+        $this->assertDatabaseHas('cart', ['orderC' => $order->order, 'status' => 2]);
+        $this->assertDatabaseHas('ordencompra', [
+            'order' => $order->order,
+            'order_state' => PurchaseOrder::STATE_CANCELLED,
+        ]);
+    }
+
     public function test_webhook_does_not_confirm_an_amount_mismatch(): void
     {
         [$user, $store] = $this->signInStore('mismatch@example.test');

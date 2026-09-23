@@ -7,6 +7,7 @@ use App\Models\Client;
 use App\Models\LoyaltyConfig;
 use App\Models\LoyaltyPoint;
 use App\Models\PurchaseOrder;
+use Illuminate\Support\Facades\DB;
 use Tests\Support\InteractsWithSalesSchema;
 use Tests\TestCase;
 
@@ -79,6 +80,39 @@ class OrderCancellationTest extends TestCase
             ->postJson("/api/v1/stores/{$store->serial}/orders/{$orderRef}/cancel")
             ->assertUnprocessable();
         $this->assertDatabaseHas('ordencompra', ['order' => $orderRef, 'order_state' => PurchaseOrder::STATE_PAID]);
+    }
+
+    public function test_public_cancel_aborts_when_another_flow_marks_paid_without_restocking(): void
+    {
+        [, $store] = $this->signInStore('cancel-race@example.test');
+        $product = $this->createProduct($store->createdby, ['number' => '45'], 2);
+        $this->cart($product->id, $store->createdby, $store->serial, 'race-cart', 2, 90);
+        $orderRef = $this->checkout($store->serial, 'race-cart');
+        $this->assertDatabaseHas('stock', ['idProd' => $product->id, 'stock' => 0]);
+
+        // TOCTOU: "iniciar transaccion" (la cancelacion habria pasado su
+        // chequeo previo sin lock) y "marcar paid por otro flujo" (webhook /
+        // confirmPayment) antes de que la cancelacion llegue al lockForUpdate.
+        // La conexion SQLite :memory: es unica, asi que la intercalacion real
+        // de dos conexiones no puede reproducirse aqui; este test fija el
+        // CONTRATO de salida del race: 422 y stock jamas repuesto.
+        DB::transaction(function () use ($orderRef, $store) {
+            PurchaseOrder::where('order', $orderRef)->update(['order_state' => PurchaseOrder::STATE_PAID]);
+
+            $this->withHeader('X-Cart-Token', 'race-cart')
+                ->postJson("/api/v1/stores/{$store->serial}/orders/{$orderRef}/cancel")
+                ->assertUnprocessable();
+
+            $this->assertDatabaseHas('ordencompra', ['order' => $orderRef, 'order_state' => PurchaseOrder::STATE_PAID]);
+            $this->assertDatabaseMissing('ordencompra', [
+                'order' => $orderRef,
+                'restock_key' => hash('sha256', 'restock:'.$orderRef),
+            ]);
+        });
+
+        // Stock intacto: la cancelacion aborto antes de CancelOrder/restock.
+        $this->assertDatabaseHas('stock', ['idProd' => $product->id, 'stock' => 0]);
+        $this->assertDatabaseHas('cart', ['user' => 'race-cart', 'status' => '2']);
     }
 
     public function test_admin_cancel_flags_a_manual_refund_for_paid_orders(): void

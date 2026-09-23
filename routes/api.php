@@ -64,9 +64,6 @@ Route::prefix('v1')->group(function () {
     Route::post('public/bookings', [AppointmentController::class, 'publicStore']);
     Route::get('public/site-settings', [AdminController::class, 'publicSiteSettings']);
 
-    // Customer delivery tracking (public, session-based)
-    Route::get('delivery/track', [DeliveryController::class, 'customerTrack']);
-
     // Marketplace (public)
     Route::get('marketplace/products', [MarketplaceController::class, 'products']);
     Route::get('marketplace/categories', [MarketplaceController::class, 'categories']);
@@ -140,27 +137,43 @@ Route::prefix('v1')->group(function () {
         });
 
         // Delivery - Store owner side
-        Route::post('orders/{order}/emit-shipping', [DeliveryController::class, 'emitOrder']);
-        Route::get('delivery/linked', [DeliveryController::class, 'linkedDeliverers']);
-        Route::put('delivery/linked/{link}/toggle-block', [DeliveryController::class, 'toggleBlock']);
-        Route::put('delivery/linked/{link}/verify', [DeliveryController::class, 'verifyDeliver']);
+        Route::middleware('role_or_permission:super-admin|delivery.manage')->group(function () {
+            Route::post('orders/{order}/emit-shipping', [DeliveryController::class, 'emitOrder']);
+            Route::get('delivery/linked', [DeliveryController::class, 'linkedDeliverers']);
+        });
+        Route::put('delivery/linked/{link}/toggle-block', [DeliveryController::class, 'toggleBlock'])
+            ->middleware('role_or_permission:super-admin|delivery.block');
 
         // Delivery - Deliver side
-        Route::post('delivery/attach-store', [DeliveryController::class, 'attachStore']);
-        Route::delete('delivery/detach-store/{link}', [DeliveryController::class, 'detachStore']);
-        Route::get('delivery/my-stores', [DeliveryController::class, 'myStores']);
-        Route::get('delivery/available-orders', [DeliveryController::class, 'availableOrders']);
-        Route::post('delivery/orders/{shipping}/accept', [DeliveryController::class, 'acceptOrder']);
-        Route::post('delivery/orders/{shipping}/complete', [DeliveryController::class, 'completeOrder']);
-        Route::post('delivery/orders/{shipping}/cancel', [DeliveryController::class, 'cancelOrder']);
-        Route::get('delivery/active-order', [DeliveryController::class, 'activeOrder']);
-        Route::post('delivery/location', [DeliveryController::class, 'updateLocation']);
+        Route::middleware('role_or_permission:deliver|delivery.profile')->group(function () {
+            Route::post('delivery/attach-store', [DeliveryController::class, 'attachStore']);
+            Route::delete('delivery/detach-store/{link}', [DeliveryController::class, 'detachStore']);
+            Route::get('delivery/my-stores', [DeliveryController::class, 'myStores']);
+            Route::get('delivery/profile', [DeliveryController::class, 'profile']);
+            Route::put('delivery/profile', [DeliveryController::class, 'updateProfile']);
+        });
+        Route::middleware('role_or_permission:deliver|delivery.accept')->group(function () {
+            Route::get('delivery/available-orders', [DeliveryController::class, 'availableOrders']);
+            Route::post('delivery/orders/{shipping}/accept', [DeliveryController::class, 'acceptOrder']);
+            Route::get('delivery/active-order', [DeliveryController::class, 'activeOrder']);
+        });
+        Route::post('delivery/orders/{shipping}/complete', [DeliveryController::class, 'completeOrder'])
+            ->middleware('role_or_permission:deliver|delivery.complete');
+        Route::post('delivery/orders/{shipping}/cancel', [DeliveryController::class, 'cancelOrder'])
+            ->middleware('role_or_permission:deliver|delivery.cancel');
+        Route::middleware('role_or_permission:deliver|delivery.location')->group(function () {
+            Route::post('delivery/location', [DeliveryController::class, 'updateLocation']);
+        });
+        // FASE 6B P0-3: la lectura de ubicacion se autoriza por rol dentro del
+        // controlador (rider -> propia; store-owner -> riders vinculados con
+        // entrega activa); sin middleware de permiso para no filtrar por 403.
         Route::get('delivery/location/{deliver}', [DeliveryController::class, 'getLocation']);
-        Route::get('delivery/profile', [DeliveryController::class, 'profile']);
-        Route::put('delivery/profile', [DeliveryController::class, 'updateProfile']);
-        Route::get('delivery/wallet', [DeliveryController::class, 'wallet']);
-        Route::get('delivery/history', [DeliveryController::class, 'deliveryHistory']);
-        Route::post('delivery/evidence', [DeliveryController::class, 'uploadEvidence']);
+        Route::middleware('role_or_permission:deliver|delivery.wallet')->group(function () {
+            Route::get('delivery/wallet', [DeliveryController::class, 'wallet']);
+            Route::get('delivery/history', [DeliveryController::class, 'deliveryHistory']);
+        });
+        Route::post('delivery/evidence', [DeliveryController::class, 'uploadEvidence'])
+            ->middleware('role_or_permission:deliver|delivery.complete');
 
         // Payments
         Route::get('payments/account', [PaymentController::class, 'getAccount']);
@@ -246,8 +259,10 @@ Route::prefix('v1')->group(function () {
         Route::delete('admin/users/{id}', [AdminController::class, 'destroy']);
         Route::get('admin/site-settings', [AdminController::class, 'siteSettings']);
         Route::put('admin/site-settings', [AdminController::class, 'updateSiteSettings']);
-        Route::get('admin/deliverers/{user}', [DeliveryController::class, 'adminGetDeliverer']);
-        Route::put('admin/deliverers/{user}/verify', [DeliveryController::class, 'adminToggleVerify']);
+        Route::middleware('role_or_permission:super-admin')->group(function () {
+            Route::get('admin/deliverers/{user}', [DeliveryController::class, 'adminGetDeliverer']);
+            Route::put('admin/deliverers/{user}/verify', [DeliveryController::class, 'adminToggleVerify']);
+        });
 
         // Custom Pages (super admin)
         Route::apiResource('admin/custom-pages', CustomPageController::class)->except(['show']);
@@ -308,13 +323,4 @@ Route::prefix('v1')->group(function () {
     Route::get('chat/{id}/messages', [ChatController::class, 'customerMessages']);
     Route::post('chat/{id}/send', [ChatController::class, 'customerSend']);
 
-    // SPA catch-all: serve Vue index.html for any non-API request (must be LAST)
-    Route::get('/{any}', function () {
-        return file_get_contents(public_path('index.html'));
-    })->where('any', '^(?!api).*$');
 });
-
-// SPA: serve Vue index.html for all non-API requests
-Route::get('/{any?}', function ($any = null) {
-    return file_get_contents(public_path('index.html'));
-})->where('any', '^(?!api).*$');

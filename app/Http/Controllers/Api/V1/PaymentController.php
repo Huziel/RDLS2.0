@@ -121,6 +121,8 @@ class PaymentController extends Controller
             return response()->json(['status' => 'ignored']);
         }
 
+        $cancelled = false;
+
         try {
             $payment = Http::withToken($account->secretKey)
                 ->acceptJson()
@@ -150,7 +152,17 @@ class PaymentController extends Controller
                 return response()->json(['status' => 'ignored']);
             }
 
-            DB::transaction(function () use ($order, $orderReference, $paymentId) {
+            DB::transaction(function () use ($order, $orderReference, $paymentId, &$cancelled) {
+                $fresh = PurchaseOrder::whereKey($order->id)->lockForUpdate()->firstOrFail();
+
+                // FASE 6B P2: un webhook tardio no puede resucitar una orden
+                // cancelada. Sin mutaciones y respuesta de ignorado (200).
+                if ($fresh->isCancelled()) {
+                    $cancelled = true;
+
+                    return;
+                }
+
                 $payment = MercadoPagoPayment::where('orderP', $orderReference)->lockForUpdate()->first();
                 if (! $payment || (int) $payment->status === 1) {
                     return;
@@ -161,11 +173,11 @@ class PaymentController extends Controller
                     'payment_id' => (int) $paymentId,
                     'fecha' => now()->format('Y-m-d H:i:s'),
                 ]);
-                $order->cartItems()
-                    ->where('variation', $order->serial)
+                $fresh->cartItems()
+                    ->where('variation', $fresh->serial)
                     ->where('status', '!=', '3')
                     ->update(['status' => '3']);
-                $order->update(['order_state' => PurchaseOrder::STATE_PAID]);
+                $fresh->update(['order_state' => PurchaseOrder::STATE_PAID]);
             });
         } catch (Throwable $exception) {
             Log::error('MercadoPago webhook verification failed.', [
@@ -174,6 +186,10 @@ class PaymentController extends Controller
             ]);
 
             return response()->json(['message' => 'No fue posible verificar el pago.'], 502);
+        }
+
+        if ($cancelled) {
+            return response()->json(['status' => 'ignored']);
         }
 
         return response()->json(['status' => 'ok']);

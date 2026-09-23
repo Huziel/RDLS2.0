@@ -14,11 +14,11 @@ use App\Models\ShippingOrder;
 use App\Models\Store;
 use App\Models\StoreSubscription;
 use App\Models\User;
-use App\Models\VerificationCode;
 use App\Services\MailService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
@@ -103,7 +103,6 @@ class OrderController extends Controller
             ->paginate($request->get('per_page', 20));
 
         $result = $orders->through(function ($order) {
-            $cartStatuses = $order->cartItems->pluck('status')->unique()->toArray();
             $shipping = $order->shippingOrder;
 
             return [
@@ -114,13 +113,15 @@ class OrderController extends Controller
                 'total' => (float) $order->total,
                 'envio' => (float) $order->totEnvio,
                 'fecha' => $order->date,
-                'paid' => in_array('3', $cartStatuses),
+                // FASE 6B P0-2: estado canonico (order_state + cart status='3'),
+                // no el cart status como unica fuente.
+                'paid' => $order->isPaid(),
                 'lat' => $order->lat,
                 'lng' => $order->long,
                 'delivery_status' => $shipping ? [
                     'id' => $shipping->id,
                     'status' => $shipping->status,
-                    'status_label' => ['0' => 'Pendiente repartidor', '1' => 'En camino', '2' => 'En proceso', '3' => 'Entregado'][$shipping->status] ?? $shipping->status,
+                    'status_label' => ['0' => 'Pendiente repartidor', '1' => 'En camino', '2' => 'En proceso', '3' => 'Entregado', '4' => 'Cancelado'][$shipping->status] ?? $shipping->status,
                     'delivery_id' => $shipping->delivery,
                     'delivery_name' => $shipping->deliver->name ?? null,
                 ] : null,
@@ -173,12 +174,8 @@ class OrderController extends Controller
                 ]),
             ]);
 
-        // Check for active shipping and verification code
+        // Check for active shipping without exposing delivery verification secrets.
         $shippingOrder = ShippingOrder::with('deliver')->where('ordenCompra', $order->id)->first();
-        $verificationCode = null;
-        if ($shippingOrder && in_array($shippingOrder->status, ['1', '2'])) {
-            $verificationCode = VerificationCode::where('orderC', $order->order)->value('code');
-        }
 
         return response()->json([
             'data' => [
@@ -192,10 +189,9 @@ class OrderController extends Controller
                 'lat' => $order->lat,
                 'lng' => $order->long,
                 'items' => $items,
-                'verification_code' => $verificationCode,
                 'shipping_status' => $shippingOrder ? [
                     'status' => $shippingOrder->status,
-                    'status_label' => ['0' => 'Pendiente', '1' => 'En camino', '2' => 'En proceso', '3' => 'Entregado'][$shippingOrder->status] ?? 'Desconocido',
+                    'status_label' => ['0' => 'Pendiente', '1' => 'En camino', '2' => 'En proceso', '3' => 'Entregado', '4' => 'Cancelado'][$shippingOrder->status] ?? 'Desconocido',
                     'delivery_name' => $shippingOrder->deliver->name ?? null,
                 ] : null,
                 'shipping' => $order->shippingForm ? [
@@ -375,11 +371,33 @@ class OrderController extends Controller
         if (! $order) {
             return response()->json(['message' => 'Orden no encontrada.'], 404);
         }
+        // FASE 6B P0-2: una orden pagada nunca se cancela publicamente.
         if ($order->isPaid()) {
             return response()->json(['message' => 'Una orden pagada no puede cancelarse publicamente.'], 422);
         }
 
-        $result = app(CancelOrder::class)($order);
+        $result = DB::transaction(function () use ($order) {
+            $fresh = PurchaseOrder::whereKey($order->id)->lockForUpdate()->firstOrFail();
+
+            // FASE 6B P1-1 (TOCTOU): el chequeo previo sin lock pudo quedar
+            // obsoleto si otro flujo (webhook / confirmPayment) marco el pago
+            // en paralelo. Re-chequear bajo lock ANTES de terminar envios o
+            // cancelar: una orden pagada nunca se cancela publicamente y jamas
+            // se repone su stock.
+            if ($fresh->isPaid()) {
+                return ['error' => 'Una orden pagada no puede cancelarse publicamente.', 'status' => 422];
+            }
+
+            // FASE 6B P1: cancelar la compra termina cualquier envio
+            // pool/direct pendiente o activo en el estado terminal definido.
+            $this->terminateShippingForCancelledOrder($fresh);
+
+            return app(CancelOrder::class)($fresh);
+        });
+
+        if (isset($result['error'])) {
+            return response()->json(['message' => $result['error']], $result['status']);
+        }
 
         return response()->json([
             'data' => $result,
@@ -392,14 +410,43 @@ class OrderController extends Controller
     {
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
-        $order = PurchaseOrder::where('serial', $store->serial)->findOrFail($id);
 
-        $result = app(CancelOrder::class)($order);
+        $result = DB::transaction(function () use ($store, $id) {
+            $order = PurchaseOrder::where('serial', $store->serial)->lockForUpdate()->findOrFail($id);
+
+            // FASE 6B P1: cancelar la compra termina cualquier envio
+            // pool/direct pendiente o activo en el estado terminal definido.
+            $this->terminateShippingForCancelledOrder($order);
+
+            return app(CancelOrder::class)($order);
+        });
 
         return response()->json([
             'data' => $result,
             'message' => $result['idempotent'] ? 'La orden ya estaba cancelada.' : 'Orden cancelada.',
         ]);
+    }
+
+    /**
+     * FASE 6B P1: cierra el envio asociado a una orden que se esta cancelando.
+     * Orden de locks: PurchaseOrder -> ShippingOrder. No repone stock aqui
+     * (FASE 8). Estado terminal: ShippingOrder::STATUS_CANCELLED ('4').
+     */
+    private function terminateShippingForCancelledOrder(PurchaseOrder $order): void
+    {
+        // Guard defensivo: si el modulo de delivery no existe en la base
+        // (esquemas legacy sin ordenenvio), la cancelacion sigue funcionando.
+        if (! Schema::hasTable((new ShippingOrder)->getTable())) {
+            return;
+        }
+
+        $shipping = ShippingOrder::where('ordenCompra', $order->id)
+            ->lockForUpdate()
+            ->first();
+
+        if ($shipping && in_array((string) $shipping->status, ['0', '1', '2'], true)) {
+            $shipping->update(['status' => ShippingOrder::STATUS_CANCELLED]);
+        }
     }
 
     private function requireCartToken(Request $request): string
@@ -441,18 +488,43 @@ class OrderController extends Controller
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
 
-        $order = DB::transaction(function () use ($store, $id) {
+        $result = DB::transaction(function () use ($store, $id) {
             $order = PurchaseOrder::where('serial', $store->serial)->lockForUpdate()->findOrFail($id);
+
+            // FASE 6B P1-2: guardas de idempotencia y cancelacion.
+            if ($order->isCancelled()) {
+                return ['error' => 'Una orden cancelada no puede confirmarse.', 'status' => 409];
+            }
+
+            if ($order->isPaid()) {
+                // FASE 6B P2: reconciliar el estado canonico. Un pago puede
+                // haber llegado solo por la marca legacy (cart status='3') sin
+                // order_state; fijarlo ahora para no dejar el estado
+                // inconsistente. Solo cuando no este ya 'paid'.
+                if ((string) $order->order_state !== PurchaseOrder::STATE_PAID) {
+                    $order->update(['order_state' => PurchaseOrder::STATE_PAID]);
+                }
+
+                return ['idempotent' => true, 'order' => $order];
+            }
+
             Cart::where('orderC', $order->order)
                 ->where('variation', $store->serial)
                 ->where('status', '!=', '3')
                 ->update(['status' => '3']);
             $order->update(['order_state' => PurchaseOrder::STATE_PAID]);
 
-            return $order;
+            return ['idempotent' => false, 'order' => $order];
         });
 
-        return response()->json(['message' => 'Pago confirmado.', 'data' => ['order' => $order->order, 'status' => '3']]);
+        if (isset($result['error'])) {
+            return response()->json(['message' => $result['error']], $result['status']);
+        }
+
+        return response()->json([
+            'message' => $result['idempotent'] ? 'La orden ya estaba pagada.' : 'Pago confirmado.',
+            'data' => ['order' => $result['order']->order, 'status' => '3'],
+        ]);
     }
 
     private function trackSubscriptionSale($storeSerial, $amount)

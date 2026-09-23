@@ -23,6 +23,11 @@ class SiteSetting extends Model
         'landing_colors' => 'array',
     ];
 
+    // Nunca serializar el secreto SMTP en respuestas de API (siteSettings y updateSiteSettings).
+    protected $hidden = [
+        'mail_password',
+    ];
+
     public static function getSettings(): self
     {
         return static::firstOrCreate([], [

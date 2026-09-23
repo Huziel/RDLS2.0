@@ -3,63 +3,106 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Delivery\EmitShippingOrderRequest;
 use App\Models\Cart;
+use App\Models\DeliveryEvidence;
 use App\Models\DeliveryLink;
 use App\Models\DeliveryLocation;
+use App\Models\DeliveryPhoto;
+use App\Models\DeliveryProfile;
+use App\Models\DeliveryWallet;
 use App\Models\PurchaseOrder;
 use App\Models\ShippingOrder;
 use App\Models\Store;
-use App\Models\VerificationCode;
+use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class DeliveryController extends Controller
 {
     // Store owner: emit shipping order
-    public function emitOrder(Request $request, $orderId)
+    public function emitOrder(EmitShippingOrderRequest $request, $orderId)
     {
         $user = $request->user();
         $store = Store::byOwner($user->name)->firstOrFail();
+        $mode = $request->validated('assignment_mode');
+        $deliveryId = $request->validated('delivery_id');
 
-        $purchaseOrder = PurchaseOrder::findOrFail($orderId);
+        $result = DB::transaction(function () use ($store, $orderId, $mode, $deliveryId) {
+            $purchaseOrder = PurchaseOrder::where('serial', $store->serial)
+                ->lockForUpdate()
+                ->findOrFail($orderId);
 
-        // Allow emit even without GPS - use 0,0 as fallback
-        if (!$purchaseOrder->lat || !$purchaseOrder->long || $purchaseOrder->lat === '0') {
-            $purchaseOrder->update(['lat' => '0', 'long' => '0']);
-        }
+            if ($purchaseOrder->isCancelled()) {
+                return ['error' => 'No se puede emitir un envio para una orden cancelada.', 'status' => 409];
+            }
 
-        $existing = ShippingOrder::where('ordenCompra', $purchaseOrder->id)->first();
-        if ($existing) {
-            return response()->json(['message' => 'Ya existe una orden de envio para este pedido.'], 422);
-        }
+            $existing = ShippingOrder::where('ordenCompra', $purchaseOrder->id)
+                ->lockForUpdate()
+                ->first();
 
-        $assignedDeliver = $request->input('delivery_id');
+            if ($existing) {
+                $sameAssignment = $existing->assignment_mode === $mode
+                    && ($mode === 'pool' || (int) $existing->delivery === (int) $deliveryId);
 
-        $shipping = ShippingOrder::create([
-            'tienda' => $store->id,
-            'delivery' => $assignedDeliver,
-            'ordenCompra' => $purchaseOrder->id,
-            'fechaIn' => now()->format('Y-m-d H:i:s'),
-            'status' => $assignedDeliver ? '1' : '0',
-        ]);
+                if (! $sameAssignment) {
+                    return ['error' => 'El pedido ya tiene un envio con otra asignacion.', 'status' => 409];
+                }
 
-        // If assigned to specific driver, mark cart as accepted
-        if ($assignedDeliver) {
-            Cart::where('orderC', $purchaseOrder->order)->update(['status' => '5']);
-            VerificationCode::create([
-                'orderC' => $purchaseOrder->order,
-                'code' => str_pad(mt_rand(0, 999), 3, '0', STR_PAD_LEFT),
+                return ['shipping' => $existing, 'created' => false];
+            }
+
+            if ($mode === 'direct') {
+                if (! $this->eligibleDeliverer((int) $deliveryId, $store->id, true)) {
+                    return ['error' => 'El repartidor no es elegible para esta tienda.', 'status' => 422];
+                }
+
+                // FASE 6B P2: un rider con otra entrega activa no puede recibir
+                // una asignacion directa (mismo patron otherActive de acceptOrder).
+                $otherActive = ShippingOrder::where('delivery', (int) $deliveryId)
+                    ->whereIn('status', ['1', '2'])
+                    ->lockForUpdate()
+                    ->exists();
+
+                if ($otherActive) {
+                    return ['error' => 'El repartidor ya tiene una entrega activa.', 'status' => 409];
+                }
+            }
+
+            $shipping = ShippingOrder::create([
+                'tienda' => $store->id,
+                'delivery' => $mode === 'direct' ? $deliveryId : null,
+                'ordenCompra' => $purchaseOrder->id,
+                'fechaIn' => now()->format('Y-m-d H:i:s'),
+                'status' => $mode === 'direct' ? '1' : '0',
+                'assignment_mode' => $mode,
             ]);
+
+            if ($mode === 'direct') {
+                // FASE 6B P0-2: nunca tocar renglones pagados (status='3', marca de pago legacy).
+                // La entrega se refleja en ordenenvio.status; el pago en order_state.
+                Cart::where('orderC', $purchaseOrder->order)
+                    ->where('status', '!=', '3')
+                    ->update(['status' => '5']);
+            }
+
+            return ['shipping' => $shipping, 'created' => true];
+        });
+
+        if (isset($result['error'])) {
+            return response()->json(['message' => $result['error']], $result['status']);
         }
 
-        $deliverIds = DeliveryLink::where('store', $store->id)
-            ->where('bloqueo', '0')
-            ->pluck('deliveryMan');
+        $shipping = $result['shipping'];
+        $created = $result['created'];
 
         return response()->json([
-            'data' => $shipping,
-            'notified_deliverers' => $assignedDeliver ? 1 : $deliverIds->count(),
-            'message' => $assignedDeliver ? 'Envio asignado al repartidor.' : 'Orden de envio emitida.',
-        ]);
+            'data' => $this->shippingData($shipping),
+            'idempotent' => ! $created,
+            'message' => $created
+                ? ($mode === 'direct' ? 'Envio asignado al repartidor.' : 'Orden de envio emitida.')
+                : 'Orden de envio recuperada.',
+        ], $created ? 201 : 200);
     }
 
     // Store owner: view linked deliverers
@@ -83,7 +126,7 @@ class DeliveryController extends Controller
                     return (float) ($so->purchaseOrder->totEnvio ?? 0);
                 });
 
-                $walletBalance = \App\Models\DeliveryWallet::where('idLog', $l->deliveryMan)->value('cant') ?? 0;
+                $walletBalance = DeliveryWallet::where('idLog', $l->deliveryMan)->value('cant') ?? 0;
 
                 return [
                     'id' => $l->id,
@@ -95,11 +138,9 @@ class DeliveryController extends Controller
                     'completed_deliveries' => $completedOrders->count(),
                     'profile' => $l->deliver->deliveryProfile ? [
                         'nombre' => $l->deliver->deliveryProfile->nombre,
-                        'apellidos' => $l->deliver->deliveryProfile->apellidoPaterno . ' ' . $l->deliver->deliveryProfile->apellidoMaterno,
+                        'apellidos' => $l->deliver->deliveryProfile->apellidoPaterno.' '.$l->deliver->deliveryProfile->apellidoMaterno,
                         'verificado' => $l->deliver->deliveryProfile->verificado,
                         'foto' => $l->deliver->deliveryProfile->photo->picture ?? null,
-                        'foto_id' => $l->deliver->deliveryProfile->fotoID ?? null,
-                        'foto_domicilio' => $l->deliver->deliveryProfile->fotoDomicilio ?? null,
                         'placas' => $l->deliver->deliveryProfile->placas ?? null,
                         'vehiculo' => $l->deliver->deliveryProfile->tipo ?? null,
                     ] : null,
@@ -113,15 +154,16 @@ class DeliveryController extends Controller
     public function adminGetDeliverer(Request $request, $userId)
     {
         $admin = $request->user();
-        if (!$admin->hasRole('super-admin')) {
+        if (! $admin->hasRole('super-admin')) {
             abort(403, 'No autorizado.');
         }
 
-        $profile = \App\Models\DeliveryProfile::with('photo')->where('idLog', $userId)->first();
-        $wallet = \App\Models\DeliveryWallet::where('idLog', $userId)->value('cant') ?? 0;
+        $profile = DeliveryProfile::with('photo')->where('idLog', $userId)->first();
+        $wallet = DeliveryWallet::where('idLog', $userId)->value('cant') ?? 0;
         $linkedStores = DeliveryLink::where('deliveryMan', $userId)->get()
             ->map(function ($l) {
                 $store = Store::find($l->store);
+
                 return [
                     'id' => $l->id,
                     'store_id' => $store ? $store->id : $l->store,
@@ -142,34 +184,13 @@ class DeliveryController extends Controller
     public function adminToggleVerify(Request $request, $userId)
     {
         $admin = $request->user();
-        if (!$admin->hasRole('super-admin')) {
+        if (! $admin->hasRole('super-admin')) {
             abort(403, 'No autorizado.');
         }
 
-        $profile = \App\Models\DeliveryProfile::where('idLog', $userId)->first();
-        if (!$profile) {
+        $profile = DeliveryProfile::where('idLog', $userId)->first();
+        if (! $profile) {
             return response()->json(['message' => 'El usuario no tiene perfil de repartidor.'], 404);
-        }
-
-        $newStatus = $profile->verificado == '1' ? '0' : '1';
-        $profile->update(['verificado' => $newStatus]);
-
-        return response()->json([
-            'message' => $newStatus == '1' ? 'Repartidor verificado.' : 'Verificacion revocada.',
-            'data' => ['verificado' => $newStatus],
-        ]);
-    }
-
-    // Store owner: verify/unverify a deliverer
-    public function verifyDeliver(Request $request, $linkId)
-    {
-        $user = $request->user();
-        $store = Store::byOwner($user->name)->firstOrFail();
-        $link = DeliveryLink::where('store', $store->id)->findOrFail($linkId);
-        $profile = \App\Models\DeliveryProfile::where('idLog', $link->deliveryMan)->first();
-
-        if (!$profile) {
-            return response()->json(['message' => 'El repartidor no tiene perfil.'], 404);
         }
 
         $newStatus = $profile->verificado == '1' ? '0' : '1';
@@ -207,7 +228,7 @@ class DeliveryController extends Controller
             return response()->json(['message' => 'Solo repartidores pueden anexarse a tiendas.'], 403);
         }
 
-        $profile = \App\Models\DeliveryProfile::where('idLog', $user->id)->where('verificado', '1')->first();
+        $profile = DeliveryProfile::where('idLog', $user->id)->where('verificado', '1')->first();
         if (! $profile) {
             return response()->json(['message' => 'Debes estar verificado para anexarte a una tienda.'], 403);
         }
@@ -238,6 +259,7 @@ class DeliveryController extends Controller
     {
         $user = $request->user();
         DeliveryLink::where('deliveryMan', $user->id)->where('id', $linkId)->delete();
+
         return response()->json(['message' => 'Desvinculado de la tienda.']);
     }
 
@@ -248,6 +270,7 @@ class DeliveryController extends Controller
         $links = DeliveryLink::where('deliveryMan', $user->id)->get();
         $data = $links->map(function ($l) {
             $store = Store::find($l->store);
+
             return [
                 'id' => $l->id,
                 'store_id' => $store ? $store->id : $l->store,
@@ -260,6 +283,7 @@ class DeliveryController extends Controller
                 'blocked' => $l->bloqueo == '1',
             ];
         });
+
         return response()->json(['data' => $data]);
     }
 
@@ -267,13 +291,21 @@ class DeliveryController extends Controller
     public function availableOrders(Request $request)
     {
         $user = $request->user();
+
+        if (! $this->eligibleRider($user)) {
+            return response()->json(['message' => 'Repartidor no elegible.'], 403);
+        }
+
         $linkedStoreIds = DeliveryLink::where('deliveryMan', $user->id)->where('bloqueo', '0')->pluck('store');
 
         $orders = ShippingOrder::with(['purchaseOrder', 'store'])
             ->whereIn('tienda', $linkedStoreIds)
+            ->where('assignment_mode', 'pool')
+            ->whereNull('delivery')
             ->where('status', '0')
+            ->whereDoesntHave('purchaseOrder', fn ($q) => $q->where('order_state', PurchaseOrder::STATE_CANCELLED))
             ->get()
-            ->map(fn($s) => [
+            ->map(fn ($s) => [
                 'id' => $s->id,
                 'orden_compra_id' => $s->ordenCompra,
                 'tienda_id' => $s->tienda,
@@ -295,53 +327,110 @@ class DeliveryController extends Controller
     // Deliver: accept order
     public function acceptOrder(Request $request, $shippingId)
     {
-        $user = $request->user();
-        $shipping = ShippingOrder::findOrFail($shippingId);
+        $shippingReference = ShippingOrder::findOrFail($shippingId);
 
-        $shipping->update(['delivery' => $user->id, 'status' => '1']);
+        $result = DB::transaction(function () use ($request, $shippingId, $shippingReference) {
+            $purchaseOrder = PurchaseOrder::whereKey($shippingReference->ordenCompra)->lockForUpdate()->firstOrFail();
+            $shipping = ShippingOrder::whereKey($shippingId)->lockForUpdate()->firstOrFail();
+            $user = User::whereKey($request->user()->id)->lockForUpdate()->firstOrFail();
 
-        $code = str_pad(mt_rand(0, 999), 3, '0', STR_PAD_LEFT);
-        VerificationCode::create(['orderC' => $shipping->purchaseOrder->order, 'code' => $code]);
+            if (! $this->eligibleDeliverer($user->id, $shipping->tienda, true)) {
+                return ['error' => 'Repartidor no elegible para esta tienda.', 'status' => 403];
+            }
 
-        \App\Models\Cart::where('orderC', $shipping->purchaseOrder->order)->update(['status' => '5']);
+            if ($purchaseOrder->isCancelled()) {
+                return ['error' => 'No se puede aceptar un pedido cancelado.', 'status' => 409];
+            }
 
-        return response()->json(['data' => ['code' => $code], 'message' => 'Pedido aceptado.']);
-    }
+            if ($shipping->assignment_mode === 'pool'
+                && (string) $shipping->status === '1'
+                && (int) $shipping->delivery === (int) $user->id) {
+                return ['shipping' => $shipping, 'idempotent' => true];
+            }
 
-    // Deliver: complete order with verification code
-    public function completeOrder(Request $request, $shippingId)
-    {
-        $user = $request->user();
-        $request->validate(['code' => ['required', 'string']]);
+            // FASE 6B P2: el rider no puede tener otra entrega activa.
+            $otherActive = ShippingOrder::where('delivery', $user->id)
+                ->where('id', '!=', $shipping->id)
+                ->whereIn('status', ['1', '2'])
+                ->lockForUpdate()
+                ->exists();
 
-        $shipping = ShippingOrder::where('delivery', $user->id)->findOrFail($shippingId);
-        $orderC = $shipping->purchaseOrder->order;
+            if ($otherActive) {
+                return ['error' => 'Ya tienes una entrega activa.', 'status' => 409];
+            }
 
-        $verify = VerificationCode::where('orderC', $orderC)->where('code', $request->code)->first();
-        if (! $verify) {
-            return response()->json(['message' => 'Código de verificación incorrecto.'], 422);
+            if ($shipping->assignment_mode !== 'pool'
+                || (string) $shipping->status !== '0'
+                || $shipping->delivery !== null) {
+                return ['error' => 'El envio ya no esta disponible.', 'status' => 409];
+            }
+
+            $shipping->update(['delivery' => $user->id, 'status' => '1']);
+            // FASE 6B P0-2: no tocar renglones pagados (marca de pago legacy).
+            Cart::where('orderC', $purchaseOrder->order)
+                ->where('status', '!=', '3')
+                ->update(['status' => '5']);
+
+            return ['shipping' => $shipping->fresh(), 'idempotent' => false];
+        });
+
+        if (isset($result['error'])) {
+            return response()->json(['message' => $result['error']], $result['status']);
         }
 
-        $shipping->update(['status' => '3']);
-        \App\Models\Cart::where('orderC', $orderC)->update(['status' => '7']);
+        return response()->json([
+            'data' => $this->shippingData($result['shipping']),
+            'idempotent' => $result['idempotent'],
+            'message' => $result['idempotent'] ? 'Pedido ya aceptado.' : 'Pedido aceptado.',
+        ]);
+    }
 
-        // Add to wallet
-        $wallet = \App\Models\DeliveryWallet::firstOrNew(['idLog' => $user->id]);
-        $wallet->cant = ($wallet->cant ?? 0) + $shipping->purchaseOrder->totEnvio;
-        $wallet->time = now()->format('Y-m-d H:i:s');
-        $wallet->save();
+    // Completion remains closed until the secure customer OTP flow exists.
+    // FASE 6B P1: la barrera es configurable (config/delivery.php) y por
+    // defecto esta en false; el comentario dejo de ser la unica proteccion.
+    public function completeOrder(Request $request, $shippingId)
+    {
+        if (! config('delivery.completion_enabled')) {
+            return response()->json([
+                'message' => 'La confirmacion segura de entrega no esta disponible.',
+            ], 503);
+        }
 
-        return response()->json(['message' => 'Pedido entregado. Código verificado.']);
+        return response()->json([
+            'message' => 'La confirmacion segura de entrega no esta disponible.',
+        ], 503);
     }
 
     // Deliver: cancel acceptance
     public function cancelOrder(Request $request, $shippingId)
     {
         $user = $request->user();
-        $shipping = ShippingOrder::where('delivery', $user->id)->where('status', '1')->findOrFail($shippingId);
+        $shippingReference = ShippingOrder::findOrFail($shippingId);
 
-        $shipping->update(['delivery' => null, 'status' => '0']);
-        \App\Models\Cart::where('orderC', $shipping->purchaseOrder->order)->update(['status' => '4']);
+        $result = DB::transaction(function () use ($user, $shippingId, $shippingReference) {
+            $purchaseOrder = PurchaseOrder::whereKey($shippingReference->ordenCompra)->lockForUpdate()->firstOrFail();
+            $shipping = ShippingOrder::whereKey($shippingId)->lockForUpdate()->firstOrFail();
+
+            if ((int) $shipping->delivery !== (int) $user->id || (string) $shipping->status !== '1') {
+                return ['error' => 'Envio no encontrado.', 'status' => 404];
+            }
+
+            if ($shipping->assignment_mode !== 'pool') {
+                return ['error' => 'Una asignacion directa no puede liberarse al pool.', 'status' => 409];
+            }
+
+            $shipping->update(['delivery' => null, 'status' => '0']);
+            // FASE 6B P0-2: no tocar renglones pagados (marca de pago legacy).
+            Cart::where('orderC', $purchaseOrder->order)
+                ->where('status', '!=', '3')
+                ->update(['status' => '4']);
+
+            return ['released' => true];
+        });
+
+        if (isset($result['error'])) {
+            return response()->json(['message' => $result['error']], $result['status']);
+        }
 
         return response()->json(['message' => 'Pedido liberado.']);
     }
@@ -353,20 +442,20 @@ class DeliveryController extends Controller
         $shipping = ShippingOrder::with(['purchaseOrder', 'purchaseOrder.shippingForm', 'store'])
             ->where('delivery', $user->id)
             ->whereIn('status', ['1', '2'])
+            ->whereDoesntHave('purchaseOrder', fn ($q) => $q->where('order_state', PurchaseOrder::STATE_CANCELLED))
             ->first();
 
         if (! $shipping) {
             return response()->json(['data' => null, 'message' => 'Sin pedidos activos.']);
         }
 
-        $verify = VerificationCode::where('orderC', $shipping->purchaseOrder->order)->first();
         $addr = $shipping->purchaseOrder->shippingForm;
 
         return response()->json([
             'data' => [
                 'id' => $shipping->id,
                 'status' => $shipping->status,
-                'code' => $verify->code ?? null,
+                'assignment_mode' => $shipping->assignment_mode,
                 'store' => [
                     'adress' => $shipping->store->adress ?? null,
                     'lat' => $shipping->store->lat && $shipping->store->lat !== '0' ? (float) $shipping->store->lat : null,
@@ -383,7 +472,7 @@ class DeliveryController extends Controller
                     'direccion' => $addr ? $addr->direccion : null,
                     'ciudad' => $addr ? $addr->ciudad : null,
                     'codigo_postal' => $addr ? $addr->codigoPostal : null,
-                    'referencia' => $addr ? ($addr->direccion . ', ' . $addr->ciudad) : ($shipping->purchaseOrder->lat !== '0' ? 'GPS: ' . $shipping->purchaseOrder->lat . ', ' . $shipping->purchaseOrder->long : 'Direccion no disponible'),
+                    'referencia' => $addr ? ($addr->direccion.', '.$addr->ciudad) : ($shipping->purchaseOrder->lat !== '0' ? 'GPS: '.$shipping->purchaseOrder->lat.', '.$shipping->purchaseOrder->long : 'Direccion no disponible'),
                 ],
             ],
         ]);
@@ -407,7 +496,46 @@ class DeliveryController extends Controller
 
     public function getLocation(Request $request, $deliverId)
     {
+        $user = $request->user();
+
+        // FASE 6B P0-3 (IDOR GPS): el rider solo puede consultar su propia ubicacion.
+        if ((string) $user->type === '3' || $user->hasRole('deliver')) {
+            if ((int) $deliverId !== (int) $user->id) {
+                return response()->json(['message' => 'Ubicacion no encontrada.'], 404);
+            }
+
+            $loc = DeliveryLocation::where('idDeliver', $deliverId)->first();
+
+            return response()->json(['data' => $loc]);
+        }
+
+        // El dueno requiere rol store-owner, vinculo del rider en una de sus
+        // tiendas y una entrega activa de esa tienda.
+        if (! $user->hasRole('store-owner')) {
+            return response()->json(['message' => 'Ubicacion no encontrada.'], 404);
+        }
+
+        $shopIds = Store::byOwner($user->name)->pluck('id');
+
+        $linked = DeliveryLink::where('deliveryMan', $deliverId)
+            ->whereIn('store', $shopIds)
+            ->exists();
+
+        if (! $linked) {
+            return response()->json(['message' => 'Ubicacion no encontrada.'], 404);
+        }
+
+        $active = ShippingOrder::where('delivery', $deliverId)
+            ->whereIn('tienda', $shopIds)
+            ->whereIn('status', ['1', '2'])
+            ->exists();
+
+        if (! $active) {
+            return response()->json(['message' => 'Ubicacion no encontrada.'], 404);
+        }
+
         $loc = DeliveryLocation::where('idDeliver', $deliverId)->first();
+
         return response()->json(['data' => $loc]);
     }
 
@@ -415,8 +543,8 @@ class DeliveryController extends Controller
     public function profile(Request $request)
     {
         $user = $request->user();
-        $profile = \App\Models\DeliveryProfile::with('photo')->where('idLog', $user->id)->first();
-        $wallet = \App\Models\DeliveryWallet::where('idLog', $user->id)->first();
+        $profile = DeliveryProfile::with('photo')->where('idLog', $user->id)->first();
+        $wallet = DeliveryWallet::where('idLog', $user->id)->first();
 
         return response()->json([
             'data' => [
@@ -443,7 +571,18 @@ class DeliveryController extends Controller
             'foto_domicilio' => ['nullable', 'string'],
         ]);
 
-        $profile = \App\Models\DeliveryProfile::where('idLog', $user->id)->first();
+        $profile = DeliveryProfile::where('idLog', $user->id)->first();
+
+        // FASE 6B P0-4: si cambian los documentos de identificacion o del
+        // comprobante de domicilio, la verificacion del superusuario deja de
+        // corresponder con los documentos y se revoca.
+        $documentsChanged = false;
+        if ($profile && $request->has('foto_id') && (string) $request->foto_id !== (string) ($profile->fotoID ?? '')) {
+            $documentsChanged = true;
+        }
+        if ($profile && $request->has('foto_domicilio') && (string) $request->foto_domicilio !== (string) ($profile->fotoDomicilio ?? '')) {
+            $documentsChanged = true;
+        }
 
         $data = [
             'nombre' => $validated['nombre'],
@@ -458,19 +597,22 @@ class DeliveryController extends Controller
             'fotoID' => $validated['foto_id'] ?? null,
             'fotoDomicilio' => $validated['foto_domicilio'] ?? null,
             'idLog' => $user->id,
-            'verificado' => $profile ? $profile->verificado : '0',
+            'verificado' => $documentsChanged ? '0' : ($profile ? $profile->verificado : '0'),
         ];
 
         if ($profile) {
             $profile->update($data);
         } else {
-            $profile = \App\Models\DeliveryProfile::create($data);
+            $profile = DeliveryProfile::create($data);
         }
 
         if ($request->has('foto_perfil')) {
-            $photo = \App\Models\DeliveryPhoto::where('idUser', $user->id)->first();
-            if ($photo) $photo->update(['picture' => $request->foto_perfil]);
-            else \App\Models\DeliveryPhoto::create(['idUser' => $user->id, 'picture' => $request->foto_perfil]);
+            $photo = DeliveryPhoto::where('idUser', $user->id)->first();
+            if ($photo) {
+                $photo->update(['picture' => $request->foto_perfil]);
+            } else {
+                DeliveryPhoto::create(['idUser' => $user->id, 'picture' => $request->foto_perfil]);
+            }
         }
 
         return response()->json(['data' => $profile->load('photo'), 'message' => 'Perfil actualizado.']);
@@ -480,7 +622,8 @@ class DeliveryController extends Controller
     public function wallet(Request $request)
     {
         $user = $request->user();
-        $wallet = \App\Models\DeliveryWallet::where('idLog', $user->id)->first();
+        $wallet = DeliveryWallet::where('idLog', $user->id)->first();
+
         return response()->json(['data' => ['balance' => $wallet ? (float) $wallet->cant : 0]]);
     }
 
@@ -494,7 +637,7 @@ class DeliveryController extends Controller
             ->orderByDesc('id')
             ->limit(50)
             ->get()
-            ->map(fn($s) => [
+            ->map(fn ($s) => [
                 'id' => $s->id,
                 'fecha' => $s->fechaIn,
                 'order_id' => $s->purchaseOrder->order ?? 'N/A',
@@ -514,54 +657,122 @@ class DeliveryController extends Controller
         $user = $request->user();
         $request->validate(['order_c' => ['required', 'string'], 'image_url' => ['required', 'string']]);
 
-        $evidence = \App\Models\DeliveryEvidence::where('orderC', $request->order_c)->first();
-        if ($evidence) {
-            $evidence->update(['img' => $request->image_url]);
-        } else {
-            \App\Models\DeliveryEvidence::create(['orderC' => $request->order_c, 'img' => $request->image_url]);
+        $orderC = $request->order_c;
+        $imageUrl = $request->image_url;
+
+        // FASE 6B P0-1: solo imagenes del propio storage bajo /uploads...
+        if (! $this->isValidEvidenceImage($imageUrl)) {
+            return response()->json(['message' => 'La imagen debe estar alojada en el storage propio.'], 422);
+        }
+
+        $result = DB::transaction(function () use ($user, $orderC, $imageUrl) {
+            $purchaseOrder = PurchaseOrder::where('order', $orderC)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $purchaseOrder) {
+                return ['error' => 'Evidencia no permitida para esta orden.', 'status' => 404];
+            }
+
+            $shipping = ShippingOrder::where('ordenCompra', $purchaseOrder->id)
+                ->lockForUpdate()
+                ->first();
+
+            // El rider autenticado debe ser EL asignado y la entrega activa.
+            if (! $shipping
+                || (int) $shipping->delivery !== (int) $user->id
+                || ! in_array((string) $shipping->status, ['1', '2'], true)) {
+                return ['error' => 'Evidencia no permitida para esta orden.', 'status' => 404];
+            }
+
+            // La evidencia legacy no registra quien la subio ni cuando, asi que
+            // no podemos distinguir un reintento idempotente de una subida ajena:
+            // cualquier evidencia previa para la orden -> 409 (fail closed).
+            if (DeliveryEvidence::where('orderC', $orderC)->exists()) {
+                return ['error' => 'Ya existe evidencia de entrega para esta orden.', 'status' => 409];
+            }
+
+            DeliveryEvidence::create(['orderC' => $orderC, 'img' => $imageUrl]);
+
+            return ['created' => true];
+        });
+
+        if (isset($result['error'])) {
+            return response()->json(['message' => $result['error']], $result['status']);
         }
 
         return response()->json(['message' => 'Evidencia guardada.']);
     }
 
-    // Public: customer delivery tracking (session-based)
-    public function customerTrack(Request $request)
+    private function isValidEvidenceImage(string $imageUrl): bool
     {
-        $sessionId = $request->session()->getId();
+        $path = parse_url($imageUrl, PHP_URL_PATH) ?? '';
 
-        // Find active deliveries for this session's orders
-        $cartOrders = Cart::where('user', $sessionId)
-            ->whereNotNull('orderC')
-            ->pluck('orderC')
-            ->unique();
-
-        if ($cartOrders->isEmpty()) {
-            return response()->json(['data' => null]);
+        if (! is_string($path) || ! str_starts_with($path, '/uploads/') || str_contains($path, '..')) {
+            return false;
         }
 
-        // Find the most recent active shipping order
-        $shipping = ShippingOrder::whereIn('ordenCompra', $cartOrders)
-            ->whereIn('status', ['0', '1'])
-            ->orderByDesc('id')
-            ->first();
+        $absolute = public_path(ltrim($path, '/'));
 
-        if (!$shipping) {
-            return response()->json(['data' => null]);
+        if (! is_file($absolute)) {
+            return false;
         }
 
-        // Get verification code
-        $verification = VerificationCode::where('orderC', $shipping->ordenCompra)->first();
-        $purchaseOrder = PurchaseOrder::where('order', $shipping->ordenCompra)->first();
+        $mime = mime_content_type($absolute);
 
-        return response()->json(['data' => [
-            'shipping_id' => $shipping->id,
-            'order_id' => $shipping->ordenCompra,
+        return $mime !== false && str_starts_with($mime, 'image/');
+    }
+
+    private function eligibleRider(User $user): bool
+    {
+        return (bool) $user->active
+            && (string) $user->type === '3'
+            && $user->hasRole('deliver')
+            && DeliveryProfile::where('idLog', $user->id)->where('verificado', '1')->exists();
+    }
+
+    private function eligibleDeliverer(int $userId, int $storeId, bool $lock = false): bool
+    {
+        $userQuery = User::whereKey($userId);
+        if ($lock) {
+            $userQuery->lockForUpdate();
+        }
+
+        $user = $userQuery->first();
+        if (! $user
+            || ! $user->active
+            || (string) $user->type !== '3'
+            || ! $user->hasRole('deliver')) {
+            return false;
+        }
+
+        $profileQuery = DeliveryProfile::where('idLog', $userId)->where('verificado', '1');
+        $linkQuery = DeliveryLink::where('deliveryMan', $userId)
+            ->where('store', $storeId)
+            ->where('bloqueo', '0');
+
+        if ($lock) {
+            $profileQuery->lockForUpdate();
+            $linkQuery->lockForUpdate();
+        }
+
+        if ($lock) {
+            return $profileQuery->first() !== null && $linkQuery->first() !== null;
+        }
+
+        return $profileQuery->exists() && $linkQuery->exists();
+    }
+
+    private function shippingData(ShippingOrder $shipping): array
+    {
+        return [
+            'id' => $shipping->id,
+            'tienda_id' => $shipping->tienda,
+            'delivery_id' => $shipping->delivery,
+            'orden_compra_id' => $shipping->ordenCompra,
+            'fecha' => $shipping->fechaIn,
             'status' => $shipping->status,
-            'status_label' => $shipping->status == '1' ? 'En camino' : 'Pendiente de repartidor',
-            'code' => $verification?->code ?? null,
-            'cliente' => $purchaseOrder?->nombre,
-            'total' => $purchaseOrder?->total,
-            'fecha' => $purchaseOrder?->date,
-        ]]);
+            'assignment_mode' => $shipping->assignment_mode,
+        ];
     }
 }
