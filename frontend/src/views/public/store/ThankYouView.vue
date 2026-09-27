@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import QRCode from 'qrcode'
 import { publicStoreApi } from '../../../api/public-store.js'
 import { ensureCartToken, money } from '../../../utils/public-store.js'
 
@@ -15,7 +16,8 @@ const error = ref('')
 const paying = ref(false)
 const payError = ref('')
 const payLink = ref('')
-const cancelled = ref(false)
+const cancelMessage = ref('')
+const qrDataUrl = ref('')
 
 const colors = computed(() => {
   const c = theme.value?.colors
@@ -27,7 +29,6 @@ const colors = computed(() => {
 })
 
 const extra = computed(() => theme.value?.extra ?? {})
-const hasBankAccount = computed(() => Boolean(extra.value.nombre_propietario1 && extra.value.transferencia1))
 const bankAccounts = computed(() => {
   const accounts = []
   if (extra.value.nombre_banco1 || extra.value.transferencia1) {
@@ -47,34 +48,53 @@ const bankAccounts = computed(() => {
   return accounts
 })
 
-const qrUrl = computed(() => {
-  if (!orderRef) return ''
-  const url = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(window.location.href)}`
-  return url
-})
+// QR generado LOCALMENTE (sin depender de un servicio externo) y SIN folio:
+// apunta a la página pública de la tienda, nunca expone el número de pedido.
+async function renderQr() {
+  try {
+    const url = `${window.location.origin}/store/${serial}`
+    qrDataUrl.value = await QRCode.toDataURL(url, { width: 220, margin: 1 })
+  } catch {
+    qrDataUrl.value = ''
+  }
+}
+
+const PAYMENT_LABELS = {
+  cash: 'Efectivo',
+  bank_transfer: 'Transferencia bancaria',
+  cash_on_delivery: 'Pago contra entrega',
+  mercado_pago: 'MercadoPago',
+}
+
+const paymentLabel = computed(() => PAYMENT_LABELS[order.value?.payment_method] || order.value?.payment_method || '')
+
+const isPayException = computed(() => order.value?.payment_status === 'payment_exception')
+const isRefunding = computed(() => order.value?.status === 'refund_pending')
+const isPaid = computed(() => order.value?.status === 'paid')
+const isCancelled = computed(() => order.value?.status === 'cancelled')
 
 const statusLabel = computed(() => {
-  const status = order.value?.status ?? ''
-  const estado = order.value?.estado ?? ''
-  const payment = order.value?.payment?.order_state ?? ''
-  if (payment === 'paid' || status === 'pagada') return 'Pagada'
-  if (estado === 'cancelada' || status === 'cancelada' || order.value?.cancelled_at) return 'Cancelada'
-  if (payment === 'pending' || status === 'pendiente' || status === 'en_proceso') return 'Pendiente'
-  return status || 'Pendiente'
+  if (isPayException.value) return 'Excepción de cobro'
+  if (isRefunding.value) return 'Reembolso en proceso'
+  if (isCancelled.value) return 'Cancelada'
+  if (isPaid.value) return 'Pagada'
+  return order.value?.can_pay ? 'Pendiente de pago' : 'Pendiente'
 })
 
-const isPaid = computed(() => statusLabel.value === 'Pagada')
-const isCancelled = computed(() => statusLabel.value === 'Cancelada')
+const active = computed(() => !isPaid.value && !isCancelled.value && !isRefunding.value && !isPayException.value)
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
     const [orderRes, themeRes] = await Promise.allSettled([
-      publicStoreApi.orderDetail(orderRef),
+      publicStoreApi.orderDetail(serial, orderRef),
       publicStoreApi.theme(serial),
     ])
-    if (orderRes.status === 'fulfilled') order.value = orderRes.value.data
+    if (orderRes.status === 'fulfilled') {
+      order.value = orderRes.value.data
+      renderQr()
+    }
     if (themeRes.status === 'fulfilled') theme.value = themeRes.value.data
     if (orderRes.status === 'rejected') {
       error.value = orderRes.reason?.message || 'No se encontró el pedido.'
@@ -98,7 +118,7 @@ async function payWithMercadoPago() {
       payError.value = data.message || 'La tienda no tiene MercadoPago configurado. Realiza la transferencia bancaria.'
     }
   } catch (e) {
-    payError.value = e?.message || 'La tienda no tiene MercadoPago configurado. Realiza la transferencia bancaria.'
+    payError.value = e?.message || 'No fue posible generar el pago. Contacta a la tienda.'
   } finally {
     paying.value = false
   }
@@ -117,20 +137,21 @@ async function verifyPayment() {
 }
 
 async function cancelOrder() {
-  if (!window.confirm('¿Cancelar este pedido? Se reabrirá el inventario.')) return
-  cancelled.value = false
+  if (!window.confirm('¿Cancelar este pedido? El inventario se gestionará según el estado de la entrega.')) return
+  cancelMessage.value = ''
   error.value = ''
   try {
-    await publicStoreApi.cancelOrder(serial, orderRef)
-    cancelled.value = true
+    const response = await publicStoreApi.cancelOrder(serial, orderRef)
+    const result = response.data ?? {}
+    cancelMessage.value = response.message || (result.return_pending
+      ? 'Pedido cancelado. La reposición queda pendiente del retorno físico.'
+      : result.restocked
+        ? 'Pedido cancelado. Stock restaurado.'
+        : 'Pedido cancelado.')
     await load()
   } catch (e) {
     error.value = e?.message || 'No fue posible cancelar el pedido.'
   }
-}
-
-function onQrError(event) {
-  event.target.style.display = 'none'
 }
 
 function printView() {
@@ -158,17 +179,21 @@ onMounted(() => {
 
       <template v-else-if="order">
         <div v-if="error" class="ps-alert ps-alert-error" role="alert">{{ error }}</div>
-        <div v-if="cancelled" class="ps-alert ps-alert-success" role="status">Pedido cancelado. | <strong>Stock restaurado</strong>.</div>
+        <div v-if="cancelMessage" class="ps-alert ps-alert-success" role="status">{{ cancelMessage }}</div>
+        <div v-if="isPayException" class="ps-alert ps-alert-error" role="alert">
+          Tu pedido tiene una <strong>excepción de cobro</strong>. No lo cancelamos ni lo damos por pagado: contacta a la
+          tienda para resolverlo.
+        </div>
 
         <div class="ps-thanks-card" :style="{ borderColor: colors.primary }">
-          <span class="ps-thanks-status" :class="{ paid: isPaid, cancelled: isCancelled }">{{ statusLabel }}</span>
+          <span class="ps-thanks-status" :class="{ paid: isPaid, cancelled: isCancelled, exception: isPayException }">{{ statusLabel }}</span>
           <h1>¡Gracias, {{ order.cliente }}!</h1>
           <p>Recibimos tu pedido <strong>{{ order.order }}</strong>. A continuación verás los pasos para completarlo.</p>
 
-          <ul class="ps-thanks-steps">
+          <ul v-if="active" class="ps-thanks-steps">
             <li>
               <b>1. Realiza tu pago</b>
-              <span>Mediante transferencia bancaria con los datos de abajo, o con MercadoPago.</span>
+              <span>{{ paymentLabel }} según la forma elegida en el checkout.</span>
             </li>
             <li>
               <b>2. Confirma tu operación</b>
@@ -179,6 +204,9 @@ onMounted(() => {
               <span>Espera la confirmación de entrega o preparación para recoger.</span>
             </li>
           </ul>
+          <ul v-else class="ps-thanks-final">
+            <li>No necesitas realizar más pasos para este pedido.</li>
+          </ul>
         </div>
 
         <div class="ps-thanks-grid">
@@ -186,9 +214,9 @@ onMounted(() => {
             <h2>Detalle del pedido</h2>
             <dl class="ps-order-lines">
               <div><dt>Cliente</dt><dd>{{ order.cliente }}</dd></div>
-              <div><dt>Teléfono</dt><dd>{{ order.telefono }}</dd></div>
               <div><dt>Folio</dt><dd>{{ order.order }}</dd></div>
               <div><dt>Fecha</dt><dd>{{ order.fecha }}</dd></div>
+              <div><dt>Forma de pago</dt><dd>{{ paymentLabel }}</dd></div>
               <div v-if="order.envio"><dt>Envío</dt><dd>{{ money(order.envio) }}</dd></div>
             </dl>
 
@@ -204,12 +232,17 @@ onMounted(() => {
 
             <div class="ps-thanks-total"><span>Total</span><strong>{{ money(order.total) }}</strong></div>
 
-            <img v-if="qrUrl" :src="qrUrl" alt="Código QR del pedido" class="ps-qr" @error="onQrError" />
+            <img v-if="qrDataUrl" :src="qrDataUrl" alt="Código QR de la tienda" class="ps-qr" />
 
             <div class="ps-thanks-actions">
-              <button class="ps-button ps-button-ghost" type="button" @click="verifyPayment">Verificar pago</button>
               <button
-                v-if="!isPaid && !isCancelled"
+                v-if="!isCancelled"
+                class="ps-button ps-button-ghost"
+                type="button"
+                @click="verifyPayment"
+              >Verificar pago</button>
+              <button
+                v-if="order.can_cancel"
                 class="ps-button ps-button-ghost"
                 type="button"
                 @click="cancelOrder"
@@ -219,7 +252,7 @@ onMounted(() => {
             </div>
           </section>
 
-          <section v-if="bankAccounts.length" class="ps-thanks-panel">
+          <section v-if="bankAccounts.length && order?.payment_method === 'bank_transfer' && active" class="ps-thanks-panel">
             <h2>Pago por transferencia</h2>
             <div v-for="account in bankAccounts" :key="account.transferencia" class="ps-bank-account">
               <p><strong>{{ account.banco }}</strong></p>
@@ -238,7 +271,10 @@ onMounted(() => {
           </a>
         </section>
 
-        <section v-else class="ps-thanks-panel ps-mp-panel">
+        <section
+          v-else-if="order?.payment_method === 'mercado_pago' && order.can_pay"
+          class="ps-thanks-panel ps-mp-panel"
+        >
           <h2>¿Prefieres pagar con MercadoPago?</h2>
           <p v-if="payError" class="ps-alert ps-alert-error">{{ payError }}</p>
           <button class="ps-button ps-button-ghost" type="button" :disabled="paying" @click="payWithMercadoPago">
@@ -284,6 +320,19 @@ onMounted(() => {
 .ps-thanks-status.cancelled {
   background: #fee2e2;
   color: #b91c1c;
+}
+
+.ps-thanks-status.exception {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.ps-thanks-final {
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+  color: #64748b;
+  font-size: 0.9rem;
 }
 
 .ps-thanks-card h1 {

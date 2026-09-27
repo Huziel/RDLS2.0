@@ -11,9 +11,10 @@ use Illuminate\Http\Request;
 
 class ProductAddonController extends Controller
 {
-    public function publicIndex($productId)
+    public function publicIndex(string $serial, int $productId)
     {
-        Product::active()->findOrFail($productId);
+        $store = Store::where('serial', $serial)->firstOrFail();
+        Product::byStore($store->createdby)->active()->findOrFail($productId);
         $addons = ProductAddon::where('idProd', $productId)->where('activo', 1)->get();
 
         return ProductAddonResource::collection($addons);

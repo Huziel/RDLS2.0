@@ -15,6 +15,16 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// Rutas públicas de cliente que PUEDEN devolver 401/403 sin que eso signifique
+// sesión de propietario inválida: catálogos públicos, carrito/checkout/órdenes
+// con X-Cart-Token, y páginas públicas. Aquí NO se expulsa al usuario.
+const PUBLIC_CLIENT_PREFIXES = ['/public/', '/stores/', '/qr/', '/pages/']
+
+const isPublicClientRoute = (config) => {
+  const url = config?.url ?? ''
+  return PUBLIC_CLIENT_PREFIXES.some((prefix) => url.startsWith(prefix))
+}
+
 api.interceptors.response.use(
   (response) => response.data,
   (error) => {
@@ -29,7 +39,7 @@ api.interceptors.response.use(
       ? { ...payload, status, code: error.code }
       : { message: fallbackMessage || 'No se pudo completar la solicitud.', status, code: error.code }
 
-    if (status === 401 && !error.config?.url?.includes('/auth/login')) {
+    if (status === 401 && !error.config?.url?.includes('/auth/login') && !isPublicClientRoute(error.config)) {
       window.dispatchEvent(new Event('auth:unauthorized'))
     }
 

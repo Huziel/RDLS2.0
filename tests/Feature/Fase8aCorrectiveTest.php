@@ -311,10 +311,16 @@ class Fase8aCorrectiveTest extends TestCase
         ]);
 
         $this->withHeader('X-Cart-Token', 'public-detail-cart')
-            ->getJson("/api/v1/public/orders/{$foreignOrder->id}")
+            ->getJson("/api/v1/stores/{$foreign->serial}/orders/{$foreignOrder->id}")
             ->assertOk()
             ->assertJsonPath('data.order', 'DETAIL-FOREIGN-ORDER');
-        $this->getJson("/api/v1/public/orders/{$own->id}")->assertNotFound();
+        $this->withHeader('X-Cart-Token', 'public-detail-cart')
+            ->getJson("/api/v1/stores/{$store->serial}/orders/{$foreignOrder->id}")
+            ->assertNotFound();
+        $this->getJson("/api/v1/stores/{$store->serial}/orders/{$own->id}")->assertNotFound();
+        $this->withHeader('X-Cart-Token', 'public-detail-cart')
+            ->getJson("/api/v1/public/orders/{$foreignOrder->id}")
+            ->assertNotFound();
     }
 
     public function test_canonical_migration_down_is_noop_on_an_empty_schema(): void

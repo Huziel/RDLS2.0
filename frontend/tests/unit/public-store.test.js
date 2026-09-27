@@ -18,11 +18,16 @@ import {
   cartCount,
   cartSubtotal,
   cartToken,
+  checkoutIdempotencyKey,
+  clearStoreCapability,
   ensureCartToken,
   lineTotal,
   money,
+  orderIdempotencyKey,
   resetCartToken,
   selectableStock,
+  setStoreCapability,
+  storeCapability,
 } from '../../src/utils/public-store.js'
 
 vi.mock('../../src/api/client.js', () => ({
@@ -71,6 +76,45 @@ describe('public store utilities', () => {
     resetCartToken()
     expect(cartToken()).toBe('')
   })
+
+  it('stores the catalog capability per store and clears it', () => {
+    sessionStorage.clear()
+    expect(storeCapability('serieA')).toBe('')
+    setStoreCapability('serieA', 'cap-abc')
+    expect(storeCapability('serieA')).toBe('cap-abc')
+    expect(storeCapability('SERIEA')).toBe('cap-abc')
+    expect(storeCapability('serieB')).toBe('')
+    clearStoreCapability('SERIEA')
+    expect(storeCapability('serieA')).toBe('')
+  })
+
+  it('derives a deterministic checkout key that changes with content', () => {
+    const token = ensureCartToken()
+    const payload = { tipo_envio: 'shipping', payment_method: 'cash', costo_envio: 30, direccion: 'Calle 1', ciudad: 'GDL', codigo_postal: '44100' }
+    const items = [{ id: 7, quantity: 2, addons: [{ id: 31 }, { id: 32 }] }]
+
+    const key = checkoutIdempotencyKey('serieA', payload, items, token)
+    expect(key).toBe(checkoutIdempotencyKey('serieA', payload, items, token))
+    expect(checkoutIdempotencyKey('serieA', payload, items, token)).not.toBe(
+      checkoutIdempotencyKey('serieA', { ...payload, payment_method: 'bank_transfer' }, items, token),
+    )
+    expect(checkoutIdempotencyKey('serieA', payload, items, token)).not.toBe(
+      checkoutIdempotencyKey('serieA', payload, [{ id: 7, quantity: 1 }], token),
+    )
+    expect(checkoutIdempotencyKey('serieA', payload, items, token)).not.toBe(
+      checkoutIdempotencyKey('serieA', { ...payload, nombre: 'Ana' }, items, token),
+    )
+    expect(checkoutIdempotencyKey('serieA', payload, items, token)).not.toBe(
+      checkoutIdempotencyKey('serieA', { ...payload, telefono: '5551112222' }, items, token),
+    )
+    expect(key.length).toBeLessThanOrEqual(100)
+  })
+
+  it('derives stable pay and cancel keys per order', () => {
+    expect(orderIdempotencyKey('pay', 'serieA', 'ORD/000001')).toBe(orderIdempotencyKey('pay', 'serieA', 'ORD/000001'))
+    expect(orderIdempotencyKey('pay', 'serieA', 'ORD/000001')).not.toBe(orderIdempotencyKey('cancel', 'serieA', 'ORD/000001'))
+    expect(orderIdempotencyKey('pay', 'serieA', 'ORD/000001')).not.toBe(orderIdempotencyKey('pay', 'serieB', 'ORD/000001'))
+  })
 })
 
 describe('public store API service', () => {
@@ -85,36 +129,78 @@ describe('public store API service', () => {
     expect(api.delete).toHaveBeenCalledWith('/stores/serieA/cart/7', { headers: { 'X-Cart-Token': token } })
   })
 
-  it('routes catalog, addons and theme based reads to public endpoints', () => {
+  it('attaches the capability header only when it exists for that store', () => {
+    sessionStorage.clear()
+    const token = ensureCartToken()
+    setStoreCapability('serieA', 'cap-xyz')
+
+    publicStoreApi.products('serieA', { category: 'Frios', per_page: 200 })
+    expect(api.get).toHaveBeenCalledWith('/public/stores/serieA/products', {
+      params: { category: 'Frios', per_page: 200 },
+      headers: { 'X-Cart-Token': token, 'X-Store-Capability': 'cap-xyz' },
+    })
+
+    publicStoreApi.products('serieB', { per_page: 200 })
+    expect(api.get).toHaveBeenNthCalledWith(2, '/public/stores/serieB/products', {
+      params: { per_page: 200 },
+      headers: { 'X-Cart-Token': token },
+    })
+  })
+
+  it('routes catalog, product, addons and theme reads to tenant public endpoints', () => {
     publicStoreApi.store('serieA')
     publicStoreApi.products('serieA', { category: 'Frios', per_page: 200 })
-    publicStoreApi.product(8)
+    publicStoreApi.product('serieA', 8)
+    publicStoreApi.productAddons('serieA', 8)
 
-    expect(api.get).toHaveBeenNthCalledWith(1, '/public/stores/serieA')
+    expect(api.get).toHaveBeenNthCalledWith(1, '/public/stores/serieA', expect.anything())
     expect(api.get).toHaveBeenNthCalledWith(2, '/public/stores/serieA/products', {
       params: { category: 'Frios', per_page: 200 },
+      headers: expect.anything(),
     })
-    expect(api.get).toHaveBeenNthCalledWith(3, '/public/products/8')
+    expect(api.get).toHaveBeenNthCalledWith(3, '/public/stores/serieA/products/8', expect.anything())
+    expect(api.get).toHaveBeenNthCalledWith(4, '/public/stores/serieA/products/8/addons', expect.anything())
   })
 
-  it('sends a generated idempotency key on checkout', () => {
-    const key = 'key-1'
-    publicStoreApi.checkout('serieA', { total: 200 }, key)
+  it('stores the capability returned by unlock', async () => {
+    sessionStorage.clear()
+    api.post.mockResolvedValueOnce({ data: { capability: 'cap-abc' } })
+    const res = await publicStoreApi.unlock('serieA', 'secreto')
+    expect(api.post).toHaveBeenCalledWith('/public/stores/serieA/unlock', { password: 'secreto' })
+    expect(res.data.capability).toBe('cap-abc')
+    expect(storeCapability('serieA')).toBe('cap-abc')
+  })
+
+  it('sends the provided idempotency key plus capability on checkout', () => {
+    sessionStorage.clear()
+    setStoreCapability('serieA', 'cap-abc')
+    publicStoreApi.checkout('serieA', { total: 200 }, 'ck-abc')
 
     const [, payload, config] = api.post.mock.calls[0]
+    expect(api.post).toHaveBeenCalledWith('/stores/serieA/checkout', { total: 200 }, expect.anything())
     expect(payload).toEqual({ total: 200 })
-    expect(config.headers).toMatchObject({ 'X-Cart-Token': expect.any(String), 'Idempotency-Key': 'key-1' })
+    expect(config.headers).toMatchObject({
+      'X-Cart-Token': expect.any(String),
+      'X-Store-Capability': 'cap-abc',
+      'Idempotency-Key': 'ck-abc',
+    })
   })
 
-  it('exposes payment, status and cancellation by order reference', () => {
-    publicStoreApi.payOrder('serieA', 'ORD/000001')
+  it('exposes payment, status and cancellation by tenant order reference with idempotency keys', () => {
+    publicStoreApi.orderDetail('serieA', 'ORD/000001')
     publicStoreApi.orderStatus('serieA', 'ORD/000001')
+    publicStoreApi.payOrder('serieA', 'ORD/000001')
     publicStoreApi.cancelOrder('serieA', 'ORD/000001')
-    publicStoreApi.orderDetail('ORD/000001')
 
+    expect(api.get).toHaveBeenNthCalledWith(1, '/stores/serieA/orders/ORD%2F000001', expect.anything())
+    expect(api.get).toHaveBeenNthCalledWith(2, '/stores/serieA/orders/ORD%2F000001/status', expect.anything())
+
+    const [, , payConfig] = api.post.mock.calls[0]
+    const [, , cancelConfig] = api.post.mock.calls[1]
     expect(api.post).toHaveBeenNthCalledWith(1, '/stores/serieA/orders/ORD%2F000001/pay', {}, expect.anything())
-    expect(api.get).toHaveBeenNthCalledWith(1, '/stores/serieA/orders/ORD%2F000001/status', expect.anything())
     expect(api.post).toHaveBeenNthCalledWith(2, '/stores/serieA/orders/ORD%2F000001/cancel', {}, expect.anything())
-    expect(api.get).toHaveBeenNthCalledWith(2, '/public/orders/ORD%2F000001', expect.anything())
+    expect(payConfig.headers['Idempotency-Key']).toMatch(/^pay-/)
+    expect(cancelConfig.headers['Idempotency-Key']).toMatch(/^cancel-/)
+    expect(payConfig.headers['Idempotency-Key']).not.toBe(cancelConfig.headers['Idempotency-Key'])
   })
 })

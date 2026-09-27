@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class Store extends Model
 {
     protected $table = 'liks';
+
     protected $primaryKey = 'id';
 
     public $timestamps = false;
@@ -47,6 +48,11 @@ class Store extends Model
     public function password()
     {
         return $this->hasOne(StorePassword::class, 'idTienda');
+    }
+
+    public function paymentSetting()
+    {
+        return $this->hasOne(StorePaymentSetting::class);
     }
 
     public function scopeByOwner($query, $email)

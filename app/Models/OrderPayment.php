@@ -33,6 +33,12 @@ class OrderPayment extends Model
 
     public const PAID_STATUSES = ['paid', 'refund_pending', 'refunded', 'payment_exception'];
 
+    // Estado que realmente representa fondos cobrados. payment_exception (un
+    // cargo del proveedor en estado de excepcion) NO equivale a fondos
+    // cobrados, aunque SI bloquea la cancelacion publica (ver
+    // PurchaseOrder::blocksCustomerCancellation).
+    public const COLLECTED_STATUSES = ['paid', 'refund_pending', 'refunded'];
+
     public function order()
     {
         return $this->belongsTo(PurchaseOrder::class, 'order_id');
@@ -55,7 +61,7 @@ class OrderPayment extends Model
 
     public function representsCollectedFunds(): bool
     {
-        return in_array($this->status, self::PAID_STATUSES, true)
+        return in_array($this->status, self::COLLECTED_STATUSES, true)
             && (float) $this->amount_paid > 0;
     }
 }

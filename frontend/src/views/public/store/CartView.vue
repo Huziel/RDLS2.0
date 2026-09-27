@@ -39,6 +39,14 @@ async function load() {
       publicStoreApi.cart(serial),
       publicStoreApi.theme(serial),
     ])
+    const lockedOut =
+      cartRes.status === 'rejected' &&
+      (cartRes.reason?.status === 401 || cartRes.reason?.status === 403)
+    if (lockedOut) {
+      publicStoreApi.clearStoreCapability(serial)
+      router.replace(`/store/${serial}`)
+      return
+    }
     if (cartRes.status === 'fulfilled') items.value = cartRes.value.data?.items ?? []
     if (themeRes.status === 'fulfilled') theme.value = themeRes.value.data
   } catch (e) {
@@ -46,6 +54,15 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function handleMutationError(e) {
+  if (e?.status === 401 || e?.status === 403) {
+    publicStoreApi.clearStoreCapability(serial)
+    router.replace(`/store/${serial}`)
+    return true
+  }
+  return false
 }
 
 async function changeQuantity(item, delta) {
@@ -57,7 +74,7 @@ async function changeQuantity(item, delta) {
     await publicStoreApi.updateCartItem(serial, item.id, next)
     await load()
   } catch (e) {
-    error.value = e?.message || 'No fue posible actualizar la cantidad.'
+    if (!handleMutationError(e)) error.value = e?.message || 'No fue posible actualizar la cantidad.'
   } finally {
     updatingId.value = null
   }
@@ -70,7 +87,7 @@ async function removeItem(item) {
     await publicStoreApi.removeCartItem(serial, item.id)
     await load()
   } catch (e) {
-    error.value = e?.message || 'No fue posible eliminar el producto.'
+    if (!handleMutationError(e)) error.value = e?.message || 'No fue posible eliminar el producto.'
   } finally {
     updatingId.value = null
   }
@@ -86,7 +103,7 @@ async function applyCoupon() {
     note.value = res?.message || 'Cupón aplicado.'
     await load()
   } catch (e) {
-    error.value = e?.message || 'Cupón inválido.'
+    if (!handleMutationError(e)) error.value = e?.message || 'Cupón inválido.'
   } finally {
     applyingCoupon.value = false
   }
@@ -132,9 +149,9 @@ onMounted(load)
               </div>
               <div class="ps-cart-actions">
                 <div class="ps-qty-controls">
-                  <button type="button" :disabled="updatingId === item.id" @click="changeQuantity(item, -1)">−</button>
+                  <button type="button" :aria-label="`Reducir ${item.product_name}`" :disabled="updatingId === item.id" @click="changeQuantity(item, -1)">−</button>
                   <span>{{ item.quantity }}</span>
-                  <button type="button" :disabled="updatingId === item.id" @click="changeQuantity(item, 1)">+</button>
+                  <button type="button" :aria-label="`Aumentar ${item.product_name}`" :disabled="updatingId === item.id" @click="changeQuantity(item, 1)">+</button>
                 </div>
                 <button class="ps-cart-remove" type="button" @click="removeItem(item)" aria-label="Quitar">×</button>
               </div>
@@ -144,7 +161,7 @@ onMounted(load)
           <aside class="ps-cart-summary" :style="{ borderColor: colors.dark }">
             <h2>Resumen</h2>
             <div class="ps-coupon-row">
-              <input v-model="couponCode" placeholder="Cupón" @keyup.enter="applyCoupon" />
+              <input v-model="couponCode" aria-label="Código de cupón" placeholder="Cupón" @keyup.enter="applyCoupon" />
               <button type="button" :disabled="applyingCoupon" @click="applyCoupon">Aplicar</button>
             </div>
             <dl>

@@ -188,8 +188,8 @@ Todos usan `auth:sanctum` y la tienda se resuelve mediante el nombre del usuario
 ### Endpoints públicos relacionados
 
 - `GET /api/v1/public/stores/{serial}/products`.
-- `GET /api/v1/public/products/{id}`.
-- `GET /api/v1/public/products/{id}/addons`.
+- `GET /api/v1/public/stores/{serial}/products/{id}`.
+- `GET /api/v1/public/stores/{serial}/products/{id}/addons`.
 - Endpoints marketplace bajo `/api/v1/marketplace/*`.
 
 ## 6. Campos y recursos

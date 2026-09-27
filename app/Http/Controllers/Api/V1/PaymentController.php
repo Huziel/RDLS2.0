@@ -48,7 +48,7 @@ class PaymentController extends Controller
 
         try {
             $saved = DB::transaction(function () use ($user, $validated, $merchant) {
-                $user->newQuery()->lockForUpdate()->findOrFail($user->id);
+                Store::byOwner($user->name)->lockForUpdate()->firstOrFail();
                 $merchantId = (string) $merchant->json('id');
                 if (MercadoPagoAccount::where('merchantId', $merchantId)
                     ->where('idLog', '!=', $user->id)

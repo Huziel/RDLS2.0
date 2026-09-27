@@ -40,7 +40,9 @@ class ConfirmManualPayment
             if ($payment->method === 'mercado_pago') {
                 return ['error' => 'Este metodo no admite confirmacion manual.', 'status_code' => 422];
             }
-
+            if (in_array($payment->status, ['payment_exception', 'refund_pending', 'refunded'], true)) {
+                return ['error' => 'El estado financiero requiere revision y no admite confirmacion manual.', 'status_code' => 422];
+            }
             $requestedMethod = $payload['method'] ?? null;
             $convertedFromLegacy = false;
             if ($payment->method === 'legacy_unknown') {
@@ -61,11 +63,22 @@ class ConfirmManualPayment
                         return ['error' => 'Se requiere un comprobante de esta orden para transferencias.', 'status_code' => 422];
                     }
                 }
-                $payment->update(['method' => $requestedMethod]);
+                $payment->update([
+                    'method' => $requestedMethod,
+                    'bank_reference' => $requestedMethod === 'bank_transfer' ? $reference : null,
+                    'cash_reference' => in_array($requestedMethod, ['cash', 'cash_on_delivery'], true) ? $reference : null,
+                ]);
                 $payment = $payment->refresh();
                 $convertedFromLegacy = true;
             } elseif ($requestedMethod !== null) {
                 return ['error' => 'El metodo de cobro no puede cambiarse.', 'status_code' => 422];
+            }
+
+            if ($payment->status === 'paid') {
+                $response = ['order' => $fresh->order, 'status' => 'paid'];
+                $this->idempotency->record($fresh, $storeId, $actorId, 'store_owner', 'manual_payment_confirmed', $eventKey, $requestHash, ['status' => 'paid'], ['status' => 'paid'], 200, $response);
+
+                return $response + ['idempotent' => true];
             }
 
             if (! $convertedFromLegacy && $payment->method === 'bank_transfer') {

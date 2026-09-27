@@ -15,13 +15,13 @@ class MarketplaceController extends Controller
     {
         $query = Product::with(['store', 'images'])
             ->where('active', 1)
-            ->whereHas('store', fn($q) => $q->where('category', '!=', '10'))
-            ->whereHas('store.extra', fn($q) => $q->whereNotNull('nombreTienda')->where('nombreTienda', '!=', ''))
+            ->whereHas('store', fn ($q) => $q->where('category', '!=', '10'))
+            ->whereHas('store.extra', fn ($q) => $q->whereNotNull('nombreTienda')->where('nombreTienda', '!=', ''))
             // Exclude products from stores with catalog password
-            ->whereDoesntHave('store', fn($q) => $q->whereHas('password'));
+            ->whereDoesntHave('store', fn ($q) => $q->whereHas('password'));
 
         if ($request->has('search')) {
-            $s = '%' . $request->search . '%';
+            $s = '%'.$request->search.'%';
             $query->where(function ($q) use ($s) {
                 $q->where('keyy', 'like', $s)->orWhere('dscr', 'like', $s);
             });
@@ -31,17 +31,24 @@ class MarketplaceController extends Controller
             $query->where('category', $request->category);
         }
 
-        if ($request->has('min_price')) $query->where('number', '>=', $request->min_price);
-        if ($request->has('max_price')) $query->where('number', '<=', $request->max_price);
-        if ($request->has('store_id')) $query->where('session', Store::find($request->store_id)->createdby ?? '');
+        if ($request->has('min_price')) {
+            $query->where('number', '>=', $request->min_price);
+        }
+        if ($request->has('max_price')) {
+            $query->where('number', '<=', $request->max_price);
+        }
+        if ($request->has('store_id')) {
+            $storeOwner = Store::whereDoesntHave('password')->find($request->store_id)?->createdby;
+            $query->where('session', $storeOwner ?? '');
+        }
 
         $sort = $request->get('sort', 'recent');
-        $products = $query->orderByDesc(match($sort) {
+        $products = $query->orderByDesc(match ($sort) {
             'price_asc' => 'number', 'price_desc' => 'number',
-            'popular' => 'id', default => 'id'
+            'popular' => 'id', default => 'id',
         })->paginate($request->get('per_page', 24));
 
-        $result = $products->through(fn($p) => [
+        $result = $products->through(fn ($p) => [
             'id' => $p->id, 'name' => $p->keyy, 'price' => (float) $p->number,
             'image' => $p->link, 'category' => $p->category,
             'store_id' => $p->store->id ?? null,
@@ -55,15 +62,23 @@ class MarketplaceController extends Controller
     public function categories()
     {
         $cats = Product::where('active', 1)->whereNotNull('category')
-            ->where('category', '!=', 'null')->distinct()->pluck('category');
+            ->where('category', '!=', 'null')
+            ->whereHas('store', fn ($query) => $query->whereDoesntHave('password'))
+            ->distinct()->pluck('category');
+
         return response()->json(['data' => $cats]);
     }
 
     public function show($id)
     {
-        $product = Product::with(['store.extra', 'images', 'addons'])->findOrFail($id);
+        $product = Product::with(['store.extra', 'images', 'addons'])
+            ->active()
+            ->whereHas('store', fn ($query) => $query->whereDoesntHave('password'))
+            ->findOrFail($id);
         $related = Product::where('category', $product->category)->where('id', '!=', $id)
-            ->where('active', 1)->limit(8)->get(['id', 'keyy', 'number', 'link']);
+            ->where('active', 1)
+            ->whereHas('store', fn ($query) => $query->whereDoesntHave('password'))
+            ->limit(8)->get(['id', 'keyy', 'number', 'link']);
 
         return response()->json(['data' => [
             'id' => $product->id, 'name' => $product->keyy, 'price' => (float) $product->number,
@@ -73,8 +88,8 @@ class MarketplaceController extends Controller
                 'id' => $product->store->id ?? null, 'name' => $product->store->extra->nombreTienda ?? $product->store->serial ?? '',
                 'serial' => $product->store->serial ?? '', 'phone' => $product->store->phone ?? '',
             ],
-            'related' => $related->map(fn($r) => ['id' => $r->id, 'name' => $r->keyy, 'price' => (float) $r->number, 'image' => $r->link]),
-            'addons' => $product->addons->map(fn($a) => ['id' => $a->id, 'name' => $a->nombre, 'price' => (float) $a->precio]),
+            'related' => $related->map(fn ($r) => ['id' => $r->id, 'name' => $r->keyy, 'price' => (float) $r->number, 'image' => $r->link]),
+            'addons' => $product->addons->map(fn ($a) => ['id' => $a->id, 'name' => $a->nombre, 'price' => (float) $a->precio]),
         ]]);
     }
 
@@ -82,14 +97,14 @@ class MarketplaceController extends Controller
     {
         $query = Store::with('extra')
             ->where('category', '!=', '10')
-            ->whereHas('extra', fn($q) => $q->whereNotNull('nombreTienda')->where('nombreTienda', '!=', ''))
+            ->whereHas('extra', fn ($q) => $q->whereNotNull('nombreTienda')->where('nombreTienda', '!=', ''))
             ->whereDoesntHave('password');
         if ($request->has('search')) {
-            $s = '%' . $request->search . '%';
-            $query->whereHas('extra', fn($q) => $q->where('nombreTienda', 'like', $s));
+            $s = '%'.$request->search.'%';
+            $query->whereHas('extra', fn ($q) => $q->where('nombreTienda', 'like', $s));
         }
         $stores = $query->paginate($request->get('per_page', 12));
-        $result = $stores->through(fn($s) => [
+        $result = $stores->through(fn ($s) => [
             'id' => $s->id, 'name' => $s->extra->nombreTienda ?? $s->serial ?? '',
             'serial' => $s->serial, 'phone' => $s->phone, 'category' => $s->category,
             'logo' => $s->logojpg, 'address' => $s->adress,
@@ -97,15 +112,17 @@ class MarketplaceController extends Controller
             'sample_products' => Product::where('session', $s->createdby)->where('active', 1)
                 ->limit(4)->pluck('link')->filter()->values(),
         ]);
+
         return response()->json($result);
     }
 
     public function storeProfile($id)
     {
-        $store = Store::with('extra')->findOrFail($id);
+        $store = Store::with('extra')->whereDoesntHave('password')->findOrFail($id);
         $products = Product::where('session', $store->createdby)->where('active', 1)
             ->limit(20)->get(['id', 'keyy', 'number', 'link', 'category']);
         $ratings = StoreRating::with('user:id,name')->where('idTieda', $id)->orderByDesc('id')->limit(20)->get();
+
         return response()->json(['data' => [
             'id' => $store->id, 'name' => $store->extra->nombreTienda ?? $store->serial ?? '',
             'serial' => $store->serial, 'phone' => $store->phone,
@@ -113,8 +130,8 @@ class MarketplaceController extends Controller
             'description' => $store->extra->texto1 ?? '',
             'horario' => $store->extra->horario ?? '',
             'facebook' => $store->extra->facebook ?? '', 'instagram' => $store->extra->instagram ?? '',
-            'products' => $products->map(fn($p) => ['id' => $p->id, 'name' => $p->keyy, 'price' => (float) $p->number, 'image' => $p->link]),
-            'ratings' => $ratings->map(fn($r) => ['user' => $r->user->name ?? '', 'rating' => (int) $r->calificacion, 'comment' => $r->comentario]),
+            'products' => $products->map(fn ($p) => ['id' => $p->id, 'name' => $p->keyy, 'price' => (float) $p->number, 'image' => $p->link]),
+            'ratings' => $ratings->map(fn ($r) => ['user' => $r->user->name ?? '', 'rating' => (int) $r->calificacion, 'comment' => $r->comentario]),
         ]]);
     }
 
@@ -122,6 +139,7 @@ class MarketplaceController extends Controller
     {
         $request->validate(['rating' => 'required|integer|min:1|max:5', 'comment' => 'nullable|string']);
         StoreRating::create(['idTieda' => $storeId, 'idUser' => $request->user()->id, 'calificacion' => $request->rating, 'comentario' => $request->comment]);
+
         return response()->json(['message' => 'Valoración guardada.'], 201);
     }
 
@@ -129,17 +147,24 @@ class MarketplaceController extends Controller
     public function aggregatedCart(Request $request)
     {
         $cartToken = $request->header('X-Cart-Token') ?? $request->session()->getId();
+        $visibleSerials = Store::whereDoesntHave('password')->pluck('serial');
         $items = Cart::with(['productData:id,keyy,number,link', 'addons.addon'])
-            ->where('user', $cartToken)->where('status', '0')->get();
+            ->where('user', $cartToken)
+            ->where('status', '0')
+            ->whereIn('variation', $visibleSerials)
+            ->whereHas('productData', fn ($product) => $product->where('active', 1)
+                ->whereHas('store', fn ($store) => $store->whereDoesntHave('password')))
+            ->get();
 
         // Group by store
         $grouped = $items->groupBy('variation')->map(function ($items, $serial) {
             $store = Store::where('serial', $serial)->first();
+
             return [
                 'store_serial' => $serial,
                 'store_name' => $store?->extra?->nombreTienda ?? $store->serial ?? 'Tienda',
                 'store_id' => $store->id ?? null,
-                'items' => $items->map(fn($i) => [
+                'items' => $items->map(fn ($i) => [
                     'id' => $i->id, 'product_name' => $i->productData->keyy ?? '',
                     'product_image' => $i->productData->link ?? '', 'price' => (float) $i->price,
                     'quantity' => (int) $i->cant,

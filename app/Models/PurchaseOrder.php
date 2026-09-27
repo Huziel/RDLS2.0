@@ -28,12 +28,29 @@ class PurchaseOrder extends Model
     public function isPaid(): bool
     {
         $payment = $this->relationLoaded('payment') ? $this->payment : $this->payment()->first();
-        if ($payment) {
-            return $payment->representsCollectedFunds();
+        if ($payment?->status === 'payment_exception') {
+            // D2: una excepcion nunca se convierte en fondos cobrados por
+            // order_state=paid o cart.status=3 residuales.
+            return false;
+        }
+        if ($payment && in_array($payment->status, OrderPayment::COLLECTED_STATUSES, true)) {
+            return true;
         }
 
+        // Conserva compatibilidad con marcadores historicos no excepcionales.
         return (string) $this->order_state === self::STATE_PAID
             || $this->cartItems()->where('status', '3')->exists();
+    }
+
+    /**
+     * Una orden que no puede cancelarse desde el flujo publico.
+     * Un pago en payment_exception NO representa fondos cobrados, pero
+     * requiere resolucion de finanzas: nunca se cancela ni restoca
+     * automaticamente por el cliente (D2 aprobado).
+     */
+    public function blocksCustomerCancellation(): bool
+    {
+        return $this->isPaid() || $this->payment?->status === 'payment_exception';
     }
 
     public function isCancelled(): bool

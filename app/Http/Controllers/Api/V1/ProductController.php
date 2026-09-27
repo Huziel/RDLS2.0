@@ -278,9 +278,11 @@ class ProductController extends Controller
         return response()->json(['message' => 'Producto eliminado.']);
     }
 
-    public function publicShow($id)
+    public function publicShow(string $serial, int $id)
     {
-        $product = Product::active()
+        $store = Store::where('serial', $serial)->firstOrFail();
+        $product = Product::byStore($store->createdby)
+            ->active()
             ->with(['images', 'stock', 'addons' => fn ($query) => $query->where('activo', 1)])
             ->findOrFail($id);
 

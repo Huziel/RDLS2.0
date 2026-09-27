@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Models\Store;
 use App\Support\DestructiveDatabaseCommandGuard;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Console\Events\CommandStarting;
@@ -25,6 +26,20 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        RateLimiter::for('catalog-unlock', function (Request $request) {
+            $serial = mb_strtolower((string) $request->route('serial'));
+            $storeIds = Store::whereRaw('LOWER(serial) = ?', [$serial])->limit(2)->pluck('id');
+            $storeId = $storeIds->count() === 1 ? $storeIds->first() : null;
+
+            return [
+                Limit::perMinute(5)->by(implode('|', [
+                    (string) $request->ip(),
+                    $storeId === null ? $serial : 'store:'.$storeId,
+                ])),
+                Limit::perMinute(20)->by((string) $request->ip()),
+            ];
+        });
+
         RateLimiter::for('proof-uploads', function (Request $request) {
             // El limiter devuelve DOS limites: el middleware throttling los
             // aplica en conjunto (fail-closed). El segundo agrega una capa por

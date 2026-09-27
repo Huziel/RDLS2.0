@@ -3,9 +3,11 @@
 namespace Tests\Feature;
 
 use App\Models\Cart;
+use App\Models\MercadoPagoAccount;
 use App\Models\OrderPaymentProof;
 use App\Models\PurchaseOrder;
 use App\Models\ShippingOrder;
+use App\Models\StorePaymentSetting;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -49,6 +51,7 @@ class OrderFinanceFlowTest extends TestCase
             'cash_reference' => 'CASH-REGISTER-1',
         ]);
 
+        StorePaymentSetting::create(['store_id' => $store->id, 'cash_on_delivery_enabled' => true]);
         $cod = $this->checkout($store, 'cod-cart', 'cash_on_delivery', 'shipping', 30);
         $this->assertDatabaseHas('order_payments', [
             'order_id' => $cod->id,
@@ -67,6 +70,12 @@ class OrderFinanceFlowTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('payment_method');
 
+        MercadoPagoAccount::create([
+            'idLog' => $owner->id,
+            'secretKey' => 'secret',
+            'publicKey' => 'public',
+            'merchantId' => 'manual-mp-merchant',
+        ]);
         $mp = $this->checkout($store, 'manual-mp', 'mercado_pago', 'pickup', 15);
         $this->withHeader('Idempotency-Key', 'manual-mp-confirm')
             ->putJson("/api/v1/orders/{$mp->id}/confirm-payment")

@@ -249,12 +249,15 @@ class CheckoutInventoryTest extends TestCase
             ->json('data.order_id');
 
         $this->withHeader('X-Cart-Token', 'other-cart')
-            ->getJson("/api/v1/public/orders/{$order}")
+            ->getJson("/api/v1/stores/{$store->serial}/orders/{$order}")
             ->assertNotFound();
         $this->withHeader('X-Cart-Token', 'private-cart')
-            ->getJson("/api/v1/public/orders/{$order}")
+            ->getJson("/api/v1/stores/{$store->serial}/orders/{$order}")
             ->assertOk()
             ->assertJsonPath('data.order', $order);
+        $this->withHeader('X-Cart-Token', 'private-cart')
+            ->getJson("/api/v1/public/orders/{$order}")
+            ->assertNotFound();
     }
 
     private function cart(

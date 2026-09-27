@@ -32,7 +32,13 @@ const colors = computed(() => {
   }
 })
 
-const storeName = computed(() => theme.value?.extra?.nombre_tienda || store.value?.extra?.nombre_tienda || serial)
+const storeName = computed(
+  () =>
+    theme.value?.extra?.nombre_tienda ||
+    store.value?.name ||
+    store.value?.extra?.nombre_tienda ||
+    serial,
+)
 
 const cartQty = computed(() => cartCount(cartItems.value))
 
@@ -41,19 +47,25 @@ const visibleProducts = computed(() => {
   return products.value.filter((p) => p.categoria === activeCategory.value)
 })
 
-const unlocked = () => sessionStorage.getItem(`ps-unlocked:${serial}`) === '1'
+const unlocked = () => Boolean(publicStoreApi.storeCapability(serial))
+
+function relock() {
+  publicStoreApi.clearStoreCapability(serial)
+  password.value = ''
+  passwordGate.value = true
+}
 
 onMounted(async () => {
   ensureCartToken()
 
-  if (!unlocked()) {
-    try {
-      const themeRes = await publicStoreApi.theme(serial)
-      theme.value = themeRes.data
-      passwordGate.value = Boolean(themeRes.data?.has_password)
-    } catch {
-      /* theme is cosmetic; the catalog still renders */
-    }
+  try {
+    const themeRes = await publicStoreApi.theme(serial)
+    theme.value = themeRes.data
+    passwordGate.value = Boolean(
+      themeRes.data?.catalog_locked ?? (themeRes.data?.has_password && !unlocked()),
+    )
+  } catch {
+    /* theme is cosmetic; the catalog still renders */
   }
   try {
     const storeRes = await publicStoreApi.store(serial)
@@ -78,6 +90,15 @@ async function loadCatalog() {
       publicStoreApi.products(serial, { per_page: 200 }),
       publicStoreApi.cart(serial),
     ])
+    const lockedOut =
+      (productsRes.status === 'rejected' &&
+        (productsRes.reason?.status === 401 || productsRes.reason?.status === 403)) ||
+      (cartRes.status === 'rejected' &&
+        (cartRes.reason?.status === 401 || cartRes.reason?.status === 403))
+    if (lockedOut) {
+      relock()
+      return
+    }
     if (productsRes.status === 'fulfilled') {
       products.value = productsRes.value.data ?? []
       categories.value = [...new Set(products.value.map((p) => p.categoria).filter(Boolean))]
@@ -93,9 +114,11 @@ async function loadCatalog() {
 async function submitPassword() {
   passwordError.value = ''
   try {
-    const storeId = store.value?.id ?? serial
-    await publicStoreApi.verifyPassword(storeId, password.value)
-    sessionStorage.setItem(`ps-unlocked:${serial}`, '1')
+    await publicStoreApi.unlock(serial, password.value)
+    if (!unlocked()) {
+      passwordError.value = 'La tienda no entregó la autorización.'
+      return
+    }
     passwordGate.value = false
     await loadCatalog()
   } catch (e) {
@@ -114,6 +137,10 @@ async function addToCart(product) {
     cartVisible.value = true
     window.setTimeout(() => (cartVisible.value = false), 2200)
   } catch (e) {
+    if (e?.status === 401 || e?.status === 403) {
+      relock()
+      return
+    }
     error.value = e?.message || 'Error al agregar el producto.'
   } finally {
     addingId.value = null

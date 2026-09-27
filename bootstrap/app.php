@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\CheckModuleAccess;
 use App\Http\Middleware\ForceJsonResponse;
+use App\Http\Middleware\RequireStoreCatalogCapability;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -25,6 +26,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'module' => CheckModuleAccess::class,
             'permission' => PermissionMiddleware::class,
             'role_or_permission' => RoleOrPermissionMiddleware::class,
+            'store.catalog' => RequireStoreCatalogCapability::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

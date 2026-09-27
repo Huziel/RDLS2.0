@@ -148,7 +148,7 @@ class OnlinePaymentPreferenceTest extends TestCase
             ->assertJsonMissingPath('data.payment.payment_id');
 
         $this->withHeader('X-Cart-Token', 'status-cart')
-            ->getJson("/api/v1/public/orders/{$order->order}")
+            ->getJson("/api/v1/stores/{$store->serial}/orders/{$order->order}")
             ->assertOk()
             ->assertJsonPath('data.status', 'paid');
     }

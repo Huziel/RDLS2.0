@@ -41,7 +41,7 @@ const addonsTotal = computed(() =>
 const unitPrice = computed(() => Number(product.value?.precio ?? 0) + addonsTotal.value)
 const total = computed(() => unitPrice.value * quantity.value)
 
-const toggleAddon = (id) => {
+function toggleAddon(id) {
   selectedAddons.value = selectedAddons.value.includes(id)
     ? selectedAddons.value.filter((x) => x !== id)
     : [...selectedAddons.value, id]
@@ -51,12 +51,17 @@ onMounted(async () => {
   ensureCartToken()
   try {
     const [productRes, themeRes] = await Promise.allSettled([
-      publicStoreApi.product(productId),
+      publicStoreApi.product(serial, productId),
       publicStoreApi.theme(serial),
     ])
     if (productRes.status === 'fulfilled') product.value = productRes.value.data
     if (themeRes.status === 'fulfilled') theme.value = themeRes.value.data
     if (productRes.status === 'rejected') {
+      if (productRes.reason?.status === 401 || productRes.reason?.status === 403) {
+        publicStoreApi.clearStoreCapability(serial)
+        router.replace(`/store/${serial}`)
+        return
+      }
       error.value = productRes.reason?.message || 'Producto no disponible.'
     }
   } finally {
@@ -77,6 +82,11 @@ async function addToCart() {
     success.value = `${quantity.value} agregado(s) al carrito.`
     window.setTimeout(() => router.push(`/store/${serial}/cart`), 650)
   } catch (e) {
+    if (e?.status === 401 || e?.status === 403) {
+      publicStoreApi.clearStoreCapability(serial)
+      router.replace(`/store/${serial}`)
+      return
+    }
     error.value = e?.message || 'Error al agregar el producto.'
   } finally {
     submitting.value = false
@@ -142,9 +152,9 @@ async function addToCart() {
             <div v-if="!outOfStock" class="ps-qty-row">
               <span>Cantidad</span>
               <div class="ps-qty-controls">
-                <button type="button" :disabled="quantity <= 1" @click="quantity -= 1">−</button>
+                <button type="button" aria-label="Reducir cantidad" :disabled="quantity <= 1" @click="quantity -= 1">−</button>
                 <span>{{ quantity }}</span>
-                <button type="button" @click="quantity += 1">+</button>
+                <button type="button" aria-label="Aumentar cantidad" @click="quantity += 1">+</button>
               </div>
             </div>
 

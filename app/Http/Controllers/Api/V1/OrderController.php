@@ -11,6 +11,8 @@ use App\Exceptions\PaymentPreferenceNotAllowed;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Order\CheckoutRequest;
 use App\Http\Requests\Order\ConfirmPaymentRequest;
+use App\Http\Resources\PublicOrderProjection;
+use App\Http\Resources\PublicOrderTicket;
 use App\Models\Cart;
 use App\Models\ExtraCharge;
 use App\Models\MercadoPagoAccount;
@@ -23,10 +25,12 @@ use App\Models\User;
 use App\Services\CanonicalOrderAmount;
 use App\Services\MailService;
 use App\Services\OrderIdempotency;
+use App\Services\OrderNotificationHtml;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Throwable;
 
 class OrderController extends Controller
@@ -53,11 +57,12 @@ class OrderController extends Controller
                 $request->tipo_envio,
                 $request->payment_method,
                 $requestHash,
+                $request->header('X-Store-Capability'),
             );
 
             if ($order->wasRecentlyCreated) {
-                $this->notifyStoreOwner($order, $storeSerial);
-                $this->trackSubscriptionSale($storeSerial, $order->total);
+                $this->notifyStoreOwner($order, $order->serial);
+                $this->trackSubscriptionSale($order->serial, $order->total);
             }
 
             return response()->json([
@@ -75,6 +80,8 @@ class OrderController extends Controller
             throw $exception;
         } catch (IdempotencyConflict $exception) {
             return response()->json(['message' => $exception->getMessage()], 409);
+        } catch (HttpExceptionInterface $exception) {
+            throw $exception;
         } catch (Throwable $exception) {
             Log::error('Online checkout failed', ['exception' => $exception]);
 
@@ -209,10 +216,10 @@ class OrderController extends Controller
         ]);
     }
 
-    private function notifyStoreOwner($order, $storeSerial)
+    private function notifyStoreOwner(PurchaseOrder $order, string $storeSerial): void
     {
         try {
-            $store = Store::where('serial', $storeSerial)->first();
+            $store = Store::whereRaw('LOWER(serial) = ?', [mb_strtolower($storeSerial)])->first();
             if (! $store) {
                 return;
             }
@@ -222,80 +229,23 @@ class OrderController extends Controller
                 return;
             }
 
-            $subject = "Nueva venta - {$order->order}";
-            $body = '
-            <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px">
-                <h2 style="color:#333">Nueva venta registrada</h2>
-                <p>Se ha recibido un nuevo pedido en tu tienda:</p>
-                <table style="width:100%;border-collapse:collapse;margin:16px 0">
-                    <tr><td style="padding:8px;border-bottom:1px solid #eee"><strong>Orden:</strong></td><td style="padding:8px;border-bottom:1px solid #eee">'.$order->order.'</td></tr>
-                    <tr><td style="padding:8px;border-bottom:1px solid #eee"><strong>Cliente:</strong></td><td style="padding:8px;border-bottom:1px solid #eee">'.$order->nombre.'</td></tr>
-                    <tr><td style="padding:8px;border-bottom:1px solid #eee"><strong>Telefono:</strong></td><td style="padding:8px;border-bottom:1px solid #eee">'.$order->tel.'</td></tr>
-                    <tr><td style="padding:8px;border-bottom:1px solid #eee"><strong>Total:</strong></td><td style="padding:8px;border-bottom:1px solid #eee;color:#059669;font-weight:700">$'.number_format($order->total, 2).'</td></tr>
-                    <tr><td style="padding:8px"><strong>Fecha:</strong></td><td style="padding:8px">'.$order->date.'</td></tr>
-                </table>
-                <p style="color:#666;font-size:14px">Revisa tu dashboard para mas detalles.</p>
-            </div>';
-
-            MailService::send($owner->name, $subject, $body);
+            $notification = app(OrderNotificationHtml::class);
+            MailService::send($owner->name, $notification->subject($order), $notification->body($order));
         } catch (\Exception $e) {
             Log::error('Order notification failed: '.$e->getMessage());
         }
     }
 
     // Public: get order detail for thank-you page
-    public function publicOrderDetail(Request $request, $id)
+    public function publicOrderDetail(Request $request, string $storeSerial, string $order)
     {
-        $cartToken = $request->header('X-Cart-Token');
-        if (! is_string($cartToken) || trim($cartToken) === '') {
+        $found = $this->publicOrder($this->requireCartToken($request), $storeSerial, $order);
+        if (! $found) {
             return response()->json(['message' => 'Orden no encontrada.'], 404);
         }
+        $found->load(['payment', 'cartItems.productData', 'cartItems.addons.addon']);
 
-        $order = is_numeric($id)
-            ? PurchaseOrder::with('shippingForm')->where('session', $cartToken)->find($id)
-            : PurchaseOrder::with('shippingForm')->where('session', $cartToken)->where('order', $id)->first();
-
-        if (! $order) {
-            return response()->json(['message' => 'Orden no encontrada.'], 404);
-        }
-
-        $items = Cart::where('orderC', $order->order)
-            ->with(['productData', 'addons.addon'])
-            ->get()
-            ->map(fn ($i) => [
-                'name' => $i->productData->keyy ?? 'Producto #'.$i->product,
-                'image' => $i->productData->link ?? null,
-                'qty' => (int) $i->cant,
-                'price' => (float) $i->price,
-                'addons' => $i->addons->map(fn ($a) => [
-                    'name' => $a->addon->nombre ?? '',
-                    'price' => (float) ($a->addon->precio ?? 0),
-                ]),
-            ]);
-
-        return response()->json(['data' => [
-            'id' => $order->id,
-            'order' => $order->order,
-            'cliente' => $order->nombre,
-            'total' => (float) $order->total,
-            'envio' => (float) $order->totEnvio,
-            'fecha' => $order->date,
-            'items' => $items,
-            'status' => $this->orderStatus($order),
-            'payment' => $order->mercadoPagoPayment ? [
-                'status' => (int) $order->mercadoPagoPayment->status === 1 ? 'approved' : 'pending',
-                'preference' => $order->mercadoPagoPayment->preference ?: null,
-            ] : null,
-        ]]);
-    }
-
-    public function orderStatus($order): string
-    {
-        if ($order->isCancelled()) {
-            return 'cancelled';
-        }
-
-        return $order->isPaid() ? 'paid' : 'pending';
+        return response()->json(['data' => PublicOrderTicket::make($found)->resolve($request)]);
     }
 
     // Public: request a MercadoPago preference for the customer's own order
@@ -311,6 +261,13 @@ class OrderController extends Controller
         }
         if ($order->isPaid()) {
             return response()->json(['message' => 'La orden ya fue pagada.'], 422);
+        }
+        // D2: una excepcion de cobro no es fondo cobrado, pero tampoco se
+        // reabre el pago por el cliente: lo resuelve finanzas.
+        if ($order->payment?->status === 'payment_exception') {
+            return response()->json([
+                'message' => 'La orden tiene una excepcion de cobro. Contacta a la tienda.',
+            ], 422);
         }
         // El cobro fue creado por otro flujo (cash, transferencia manual, etc.):
         // no llamar a MercadoPago por ellas ni exponer 502 con un error de regla.
@@ -371,14 +328,7 @@ class OrderController extends Controller
             return response()->json(['message' => 'Orden no encontrada.'], 404);
         }
 
-        return response()->json(['data' => [
-            'order' => $order->order,
-            'status' => $this->orderStatus($order),
-            'payment' => $order->mercadoPagoPayment ? [
-                'status' => (int) $order->mercadoPagoPayment->status === 1 ? 'approved' : 'pending',
-                'preference' => $order->mercadoPagoPayment->preference ?: null,
-            ] : null,
-        ]]);
+        return response()->json(['data' => PublicOrderProjection::make($order)->resolve($request)]);
     }
 
     // Public: customer cancels her own pending order (stock is restored once)
@@ -389,9 +339,12 @@ class OrderController extends Controller
         if (! $order) {
             return response()->json(['message' => 'Orden no encontrada.'], 404);
         }
-        // FASE 6B P0-2: una orden pagada nunca se cancela publicamente.
-        if ($order->isPaid()) {
-            return response()->json(['message' => 'Una orden pagada no puede cancelarse publicamente.'], 422);
+        // FASE 6B P0-2 + D2: una orden pagada o con excepcion de cobro
+        // nunca se cancela publicamente.
+        if ($order->blocksCustomerCancellation()) {
+            return response()->json([
+                'message' => 'Una orden pagada o con excepcion de cobro no puede cancelarse publicamente.',
+            ], 422);
         }
 
         try {
@@ -467,7 +420,9 @@ class OrderController extends Controller
 
     private function publicOrder(string $cartToken, string $storeSerial, string $reference): ?PurchaseOrder
     {
-        $query = PurchaseOrder::where('session', $cartToken)->where('serial', $storeSerial);
+        $query = PurchaseOrder::with('payment')
+            ->where('session', $cartToken)
+            ->whereRaw('LOWER(serial) = ?', [mb_strtolower($storeSerial)]);
         $order = is_numeric($reference)
             ? $query->find($reference)
             : $query->where('order', $reference)->first();
@@ -567,7 +522,7 @@ class OrderController extends Controller
     private function trackSubscriptionSale($storeSerial, $amount)
     {
         try {
-            $store = Store::where('serial', $storeSerial)->first();
+            $store = Store::whereRaw('LOWER(serial) = ?', [mb_strtolower($storeSerial)])->first();
             if (! $store) {
                 return;
             }

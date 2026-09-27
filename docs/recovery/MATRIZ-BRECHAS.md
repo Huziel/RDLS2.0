@@ -95,3 +95,42 @@ Pendientes P2 registrados de 8A (NO bloqueantes del GO; deben resolverse antes d
 | 8A-P13 | Subpago MP queda `pending` y webhook responde `ok` sin señal operativa específica | `PaymentController::webhook()` (`app/Http/Controllers/Api/V1/PaymentController.php:267-288,338`); `PaymentSecurityTest::test_webhook_preserves_a_partial_charge_without_marking_the_order_paid` | 9 |
 
 `8A-P10` no se duplica: el pendiente MariaDB/InnoDB ya está registrado como `8A-P5`.
+
+---
+
+## Estado de evidencia FASE 8B
+
+Fecha: 2026-09-26 · Rama: `recuperacion` · base auditada `8fd678d` (== `origin/recuperacion` al iniciar). FASE 8B integrada en commit local; **sin push**. Suite backend: **185 tests / 1229 assertions** (SQLite `:memory:`), Pint focalizado y `git diff --check` limpios. Frontend: **Vitest 40/40**, **Playwright 82/82**, **build OK**, `npm audit` 0 vulnerabilidades. QA/review/seguridad: GO fuente; despliegue NO-GO por bundle `public/` legacy y gates pendientes. Detalle en `FASE-8B-reporte.md`.
+
+Filas cerradas en 8B:
+
+| ID | Módulo/flujo | Evidencia | Ruta/endpoint | Rol/tenant | Estado código | Pruebas | Brecha | Riesgo | Fase |
+|---|---|---|---|---|---|---|---|---|---|
+| 8B-01 | `payment_exception` NO se cancela públicamente y NO se declara cobrado | D2 + re-auditoría | `OrderController::publicCancel`, `publicPaymentPreference`, `CancelOrder::blocksCustomerCancellation`, `PurchaseOrder::isPaid` (COLLECTED_STATUSES) | cliente público | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | Fase8bSecurityClosureTest (4 tests nuevos: exception no-cancel sin claiming fondos; proyección `can_cancel=false`; fail-closed en proveedor) | `payment_exception` → 422 con instrucciones; `refund_pending`/`refunded` bloquean cancelación cliente; `amount_paid>0` rastrea fondos reales | crítico | 8 |
+| 8B-02 | Tienda pública sin PII (D1): solo campos comerciales | D1 | `PublicStoreResource` (nuevo) `id, serial, category, logo, logojpg, name`; `StoreController::publicShow` | público | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | `test_public_store_profile_exposes_minimal_commercial_fields_without_pii` (extra/owner-createdby/phone/adress/lat/long fuera) | `StoreResource` queda solo para rutas owner | alto | 8 |
+| 8B-03 | Invariante transaccional: unlock usa la instancia leída dentro de la transacción | D2 | `StoreController::unlockCatalog`; observación SQLite vía `DB::transactionLevel()>=1` | cliente | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE (orden/contexto, NO concurrencia) | `test_unlock_issues_from_the_row_locked_in_transaction_not_a_stale_read` | SQLite no prueba exclusión mutua ni `FOR UPDATE`; MariaDB NO CONFIRMADO (NC-01) | crítico | 8/9 |
+| 8B-04 | Checkout lee readiness de pago bajo el MISMO lock de fila de tienda | D2 | `Checkout.php:69` (lock `liks`) → `StorePaymentMethods::resolve` intra-tx | cliente | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | `test_checkout_reads_payment_readiness_under_the_same_store_row_lock` (tablas de readiness >= lockIndex, nivel>=1) | `liks`/`passcatalago`/`masdatosdetienda`/cobros leídos bajo lock; throttle `catalog-unlock` a nivel 0 testado aparte | alto | 8/9 |
+| 8B-05 | UI entrega `payment_method` + COD solo con envío local (cierra 8A-P6) | contrato estricto | `CheckoutView.vue` (radio group de `theme.payment_methods`, watch tipo_envio) | cliente | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | unit (key determinista cambia con method/cart), e2e `cash on delivery is only offered with local shipping`, e2e checkout aserta `payment_method` en payload | checkout ya no responde 422 por método ausente | alto | 8 |
+| 8B-06 | Idempotency-Key determinista en checkout, pay y cancel (cierra 8A-P6 parcial) | contrato estricto | `checkoutIdempotencyKey` (serial+token+items+payload completo estable → `ck-`), `orderIdempotencyKey` (`pay-`/`cancel-`) | cliente | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | unit cambia con carrito/método/nombre/teléfono; e2e keys /^ck-/,/^pay-/,/^cancel-/ | colisión solo produce 409 porque backend valida sha256 del contenido; nunca mutación silenciosa | alto | 8 |
+| 8B-07 | `orderDetail`/`orderStatus`/`pay`/`cancel` bajo `/stores/{serial}/orders/…` con token (cierra 8A-P9) | contrato estricto | `api/public-store.js` (rutas nuevas + URI-escaping serial/ref) | cliente | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | unit `exposes payment, status and cancellation by tenant order reference`; e2e thanks/cancel/MP | rutas legacy `/public/products/:id`, `/public/orders/:ref`, `verify-password` ELIMINADAS del cliente; backend ya 404 | alto | 8 |
+| 8B-08 | Capability header en catálogo/carrito/checkout + relock 401/403 sin logout global | D5 | storage canoniza serial en minúsculas; middleware canoniza ruta; gate usa `catalog_locked` | cliente | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | unit casing; PHP casing alterno; e2e capability expirada relockea y capability válida sobrevive reload sin gate | 401 público NO expulsa sesión owner | alto | 8 |
+| 8B-09 | ThankYou con ticket nuevo, estados y QR local sin folio | contrato estricto | `ThankYouView.vue`: status/payment_status/payment_method/can_pay/can_cancel; badge Excepción de cobro; QR `qrcode` local apuntando a `/store/{serial}` | cliente | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | e2e exception (sin cancelar, sin MP), cancel, MP link, QR `data:image/png;base64` | sin `telefono` (fuera del contrato own-ticket); QR generado localmente (sin servicio externo, sin folio) | medio | 8 |
+| 8B-10 | Intercepción global de 401 owner preservada; pruebas negativas estables | D5 | `client.js` + `AuthLayout`/dashboard 401 expulsan solo en rutas autenticadas | owner | IMPLEMENTADO EN CÓDIGO + PROBADO LOCALMENTE | e2e login/dashboard/products/pos (session expiry sigue redirigiendo a login) | sin regresión en rutas autenticadas | alto | 8 |
+
+### Cierres de pendientes 8A
+
+- **8A-P6** (deferral UI: `payment_method`, keys en pay/cancel) → CERRADO por 8B-05/8B-06.
+- **8A-P9** (`publicOrderDetail` token-only sin serial y contrato UI legacy) → CERRADO por 8B-07 en frontend+backend (ruta `/stores/{serial}/orders/{ref}`, backend desde 8A).
+- El pendiente **8A-P2** (key >100 chars sin test) sigue abierto; la validación backend es previa a la generación frontend (≤100 en todos los casos: `ck-`/`pay-`/`cancel-` + hash base36).
+
+Pendientes 8B (no bloquean revisión/commit de fuente; varios bloquean despliegue):
+
+| ID | Hallazgo | Evidencia | Fase objetivo |
+|---|---|---|---|
+| 8B-P1 | Concurrencia real MariaDB/InnoDB (locks FOR UPDATE de 8B-03/04, deadlocks, doble unlock/webhook simultáneo) NO CONFIRMADO | entorno sin Docker; duplica NC-01/8A-P5 | 9/14 |
+| 8B-P2 | QR apunta a la página pública de la tienda (decisión D-cuestionada: sin folio no resuelve un pedido desde escáner ajeno; el propio cliente ya tiene su sesión) | `ThankYouView.vue` + `FLUJOS-CONFIRMADOS.md` | validar con dueño |
+| 8B-P3 | **Bundle servido `public/` conserva rutas legacy y QR externo con folio; no desplegar backend 8B separado** | `public/index.html`, assets históricos; `public/` inmutable | proceso de artefacto aprobado / antes de despliegue |
+| 8B-P4 | E2E corre sobre Vite dev server local, no sobre el artefacto que reemplazará `public/` ni CI | `playwright.config.js`, `MARIADB-RUNBOOK.md` | 14 / antes de despliegue |
+| 8B-P5 | `X-Cart-Token` persistente no es identidad cliente expirable/revocable; serial+token reduce cruce pero no robo/XSS/dispositivo compartido | `public-store.js`, `OrderController::requireCartToken/publicOrder` | decisión arquitectura/seguridad |
+| 8B-P6 | `publicTheme` publica titulares/cuentas bancarias y ubicación exacta en tienda abierta; allowlist comercial NO CONFIRMADA | `StoreController::publicTheme`, `StoreExtraResource` | decisión dueño + seguridad |
+| 8B-P7 | `submitProof` y throttle usan serial crudo; casing alterno puede fragmentar bucket por orden según collation (persiste límite global IP) | `OrderFinanceController::submitProof`, `AppServiceProvider` | 9 / P2 no bloqueante |

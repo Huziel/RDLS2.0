@@ -5,6 +5,7 @@ namespace Tests\Support;
 use App\Models\Product;
 use App\Models\ProductStock;
 use App\Models\Store;
+use App\Models\StoreExtra;
 use App\Models\User;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -31,7 +32,10 @@ trait InteractsWithInventorySchema
             $table->id();
             $table->string('serial')->unique();
             $table->string('createdby')->unique();
+            $table->string('phone')->nullable();
+            $table->string('category')->nullable();
             $table->string('logo')->nullable();
+            $table->string('logojpg')->nullable();
             $table->string('color')->nullable();
             $table->string('lat')->nullable();
             $table->string('long')->nullable();
@@ -180,6 +184,15 @@ trait InteractsWithInventorySchema
             'serial' => 'STORE-'.strtoupper(substr(md5($email), 0, 8)),
             'createdby' => $email,
         ]);
+        if (Schema::hasTable('masdatosdetienda')) {
+            StoreExtra::create([
+                'idTienda' => $store->id,
+                'nombreTienda' => 'Tienda de prueba',
+                'nameBanc1' => 'Banco de prueba',
+                'namePrope1' => 'Titular de prueba',
+                'transf1' => '000000000000000000',
+            ]);
+        }
 
         $permissions = array_unique(array_merge($permissions, [
             'orders.read',

@@ -16,8 +16,11 @@ use App\Models\PurchaseOrder;
 use App\Models\ShippingForm;
 use App\Models\Store;
 use App\Models\StoreFeature;
+use App\Models\StorePassword;
 use App\Services\CanonicalOrderAmount;
 use App\Services\OrderIdempotency;
+use App\Services\StoreCatalogCapability;
+use App\Services\StorePaymentMethods;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -27,6 +30,8 @@ class Checkout
         private readonly ConsumeInventory $consumeInventory,
         private readonly OrderIdempotency $idempotency,
         private readonly CanonicalOrderAmount $amounts,
+        private readonly StorePaymentMethods $paymentMethods,
+        private readonly StoreCatalogCapability $catalogCapabilities,
     ) {}
 
     public function __invoke(
@@ -43,12 +48,11 @@ class Checkout
         ?string $deliveryType = null,
         string $paymentMethod = 'legacy_unknown',
         ?string $requestHash = null,
+        ?string $catalogCapability = null,
     ): PurchaseOrder {
-        $store = Store::where('serial', $storeSerial)->firstOrFail();
-
         return DB::transaction(function () use (
             $sessionId,
-            $store,
+            $storeSerial,
             $customerName,
             $phone,
             $lat,
@@ -60,7 +64,14 @@ class Checkout
             $deliveryType,
             $paymentMethod,
             $requestHash,
+            $catalogCapability,
         ) {
+            $stores = Store::whereRaw('LOWER(serial) = ?', [mb_strtolower($storeSerial)])
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            abort_unless($stores->count() === 1, 404);
+            $store = $stores->first();
             $cartItems = Cart::active()
                 ->byUser($sessionId)
                 ->byStore($store->serial)
@@ -108,6 +119,18 @@ class Checkout
 
             if ($cartItems->contains(fn (Cart $item) => $item->dom !== $store->createdby)) {
                 throw ValidationException::withMessages(['cart' => ['El carrito contiene productos de otra tienda.']]);
+            }
+
+            $passwords = StorePassword::where('idTienda', $store->id)->lockForUpdate()->get();
+            if ($passwords->count() > 1) {
+                abort(403, 'Capability de catalogo invalida.');
+            }
+            $this->catalogCapabilities->authorizeWithPassword($store, $passwords->first(), $catalogCapability);
+
+            if (! $this->paymentMethods->enabled($store, $paymentMethod, true)) {
+                throw ValidationException::withMessages([
+                    'payment_method' => ['El metodo de pago seleccionado no esta disponible.'],
+                ]);
             }
 
             $quantities = $cartItems->groupBy('product')

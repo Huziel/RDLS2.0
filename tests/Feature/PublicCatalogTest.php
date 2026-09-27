@@ -58,7 +58,7 @@ class PublicCatalogTest extends TestCase
         $this->assertEquals(5, $index['stock']);
         $this->assertSame('60', $index['precio']);
 
-        $show = $this->getJson("/api/v1/public/products/{$product->id}")->assertOk()->json('data');
+        $show = $this->getJson("/api/v1/public/stores/{$store->serial}/products/{$product->id}")->assertOk()->json('data');
         $this->assertArrayNotHasKey('store_session', $show);
         $this->assertEquals(5, $show['stock']);
         $this->assertCount(1, $show['aditivos']);
@@ -80,7 +80,7 @@ class PublicCatalogTest extends TestCase
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.nombre', 'Visible');
 
-        $this->getJson("/api/v1/public/products/{$visible->id}")
+        $this->getJson("/api/v1/public/stores/{$store->serial}/products/{$visible->id}")
             ->assertOk()
             ->assertJsonCount(1, 'data.aditivos')
             ->assertJsonPath('data.aditivos.0.nombre', 'Activo');

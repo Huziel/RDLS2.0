@@ -123,6 +123,128 @@ trait InteractsWithSalesSchema
             $table->id();
             $table->unsignedBigInteger('idTienda');
             $table->string('nombreTienda')->nullable();
+            $table->string('horario')->nullable();
+            $table->string('banner')->nullable();
+            $table->text('texto1')->nullable();
+            $table->text('texto2')->nullable();
+            $table->string('facebook')->nullable();
+            $table->string('instagram')->nullable();
+            $table->string('youtube')->nullable();
+            $table->string('mercadoLibre')->nullable();
+            $table->string('transf1')->nullable();
+            $table->string('transf2')->nullable();
+            $table->string('nameBanc1')->nullable();
+            $table->string('nameBanc2')->nullable();
+            $table->string('namePrope1')->nullable();
+            $table->string('namePrope2')->nullable();
+            $table->string('booking_days')->nullable();
+            $table->string('booking_hours')->nullable();
+            $table->text('sections')->nullable();
+        });
+
+        Schema::create('passcatalago', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('idTienda')->unique();
+            $table->string('keyMenu');
+        });
+
+        Schema::create('colores', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('idStore')->unique();
+            $table->string('coloruno');
+            $table->string('colordos');
+            $table->string('colortres');
+            $table->string('colorcuatro');
+            $table->string('colorcinco');
+        });
+
+        Schema::create('temastienda', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('userId')->unique();
+            $table->integer('temaId');
+        });
+
+        Schema::create('fotos', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('idLog');
+            $table->string('urlFoto');
+            $table->string('fecha')->nullable();
+        });
+
+        Schema::create('videos', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('idLog');
+            $table->string('urlVideo');
+            $table->string('fecha')->nullable();
+        });
+
+        Schema::create('store_payment_settings', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('store_id')->unique();
+            $table->boolean('cash_on_delivery_enabled')->default(false);
+            $table->timestamps();
+        });
+
+        Schema::create('agenda', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('idLog');
+            $table->string('nombre');
+            $table->string('fechaCreacion');
+            $table->dateTime('feachaApartada');
+            $table->string('telefono')->nullable();
+            $table->text('texto')->nullable();
+            $table->boolean('activo')->default(true);
+        });
+
+        Schema::create('calificaciontienda', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('idTieda');
+            $table->unsignedBigInteger('idUser')->nullable();
+            $table->integer('calificacion');
+            $table->text('comentario')->nullable();
+            $table->string('fotoComentario')->nullable();
+        });
+
+        Schema::create('chat_conversations', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('store_id');
+            $table->string('customer_name');
+            $table->string('customer_phone')->nullable();
+            $table->string('customer_email')->nullable();
+            $table->string('session_id')->nullable();
+            $table->string('status')->default('open');
+            $table->timestamp('last_message_at')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('chat_messages', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('conversation_id');
+            $table->string('sender_type');
+            $table->text('message');
+            $table->timestamp('read_at')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('cuponera', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('idTienda');
+            $table->string('nombre');
+            $table->string('tipo');
+            $table->string('codeC')->unique();
+            $table->integer('uses')->default(1);
+            $table->date('expired');
+            $table->double('porcent')->default(0);
+            $table->double('cant')->default(0);
+            $table->double('valorCompra')->default(0);
+            $table->date('starts');
+        });
+
+        Schema::create('productcupon', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('idCupon');
+            $table->unsignedBigInteger('idData');
+            $table->double('porcent');
         });
 
         Schema::create('mercadopagocuentas', function (Blueprint $table) {

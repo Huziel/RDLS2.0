@@ -53,16 +53,20 @@ Route::prefix('v1')->group(function () {
     Route::post('auth/reset-password', ResetPasswordController::class);
 
     // Public
-    Route::post('catalog/{store}/verify-password', [StoreController::class, 'verifyCatalogPassword']);
     Route::post('payments/webhook', [PaymentController::class, 'webhook']);
-    Route::get('public/stores/{serial}', [StoreController::class, 'publicShow']);
+    Route::post('public/stores/{serial}/unlock', [StoreController::class, 'unlockCatalog'])
+        ->middleware('throttle:catalog-unlock');
+    Route::get('public/stores/{serial}', [StoreController::class, 'publicShow'])->middleware('store.catalog');
     Route::get('public/stores/{serial}/theme', [StoreController::class, 'publicTheme']);
-    Route::get('public/stores/{serial}/availability', [StoreController::class, 'publicAvailability']);
-    Route::get('public/stores/{serial}/products', [ProductController::class, 'publicIndex']);
-    Route::get('public/products/{id}', [ProductController::class, 'publicShow']);
-    Route::get('public/products/{product}/addons', [ProductAddonController::class, 'publicIndex']);
+    Route::get('public/stores/{serial}/availability', [StoreController::class, 'publicAvailability'])->middleware('store.catalog');
+    Route::get('public/stores/{serial}/products', [ProductController::class, 'publicIndex'])->middleware('store.catalog');
+    Route::get('public/stores/{serial}/products/{id}', [ProductController::class, 'publicShow'])
+        ->whereNumber('id')->middleware('store.catalog');
+    Route::get('public/stores/{serial}/products/{product}/addons', [ProductAddonController::class, 'publicIndex'])
+        ->whereNumber('product')->middleware('store.catalog');
     Route::get('qr/{id}/track', [QrController::class, 'track']);
-    Route::post('public/bookings', [AppointmentController::class, 'publicStore']);
+    Route::post('public/stores/{serial}/bookings', [AppointmentController::class, 'publicStore'])
+        ->middleware('store.catalog');
     Route::get('public/site-settings', [AdminController::class, 'publicSiteSettings']);
 
     // Marketplace (public)
@@ -96,6 +100,10 @@ Route::prefix('v1')->group(function () {
         Route::get('store/catalog-password', [StoreController::class, 'catalogPassword']);
         Route::put('store/catalog-password', [StoreController::class, 'catalogPassword']);
         Route::delete('store/catalog-password', [StoreController::class, 'removeCatalogPassword']);
+        Route::get('store/payment-settings', [StoreController::class, 'paymentSettings'])
+            ->middleware('permission:payments.mercado-pago.manage');
+        Route::put('store/payment-settings', [StoreController::class, 'updatePaymentSettings'])
+            ->middleware('permission:payments.mercado-pago.manage');
         Route::get('store/features', [StoreController::class, 'getFeatures']);
         Route::put('store/features/toggle', [StoreController::class, 'featureToggle']);
         Route::get('store/shipping-costs', [StoreController::class, 'shippingCosts']);
@@ -307,12 +315,12 @@ Route::prefix('v1')->group(function () {
     });
 
     // Public cart (session-based, no auth required)
-    Route::get('stores/{storeSerial}/cart', [CartController::class, 'index']);
-    Route::post('stores/{storeSerial}/cart', [CartController::class, 'store']);
-    Route::put('stores/{storeSerial}/cart/{cartId}', [CartController::class, 'update']);
-    Route::delete('stores/{storeSerial}/cart/{cartId}', [CartController::class, 'destroy']);
-    Route::delete('stores/{storeSerial}/cart', [CartController::class, 'clear']);
-    Route::post('stores/{storeSerial}/cart/coupon', [CartController::class, 'applyCoupon']);
+    Route::get('stores/{storeSerial}/cart', [CartController::class, 'index'])->middleware('store.catalog');
+    Route::post('stores/{storeSerial}/cart', [CartController::class, 'store'])->middleware('store.catalog');
+    Route::put('stores/{storeSerial}/cart/{cartId}', [CartController::class, 'update'])->middleware('store.catalog');
+    Route::delete('stores/{storeSerial}/cart/{cartId}', [CartController::class, 'destroy'])->middleware('store.catalog');
+    Route::delete('stores/{storeSerial}/cart', [CartController::class, 'clear'])->middleware('store.catalog');
+    Route::post('stores/{storeSerial}/cart/coupon', [CartController::class, 'applyCoupon'])->middleware('store.catalog');
 
     // Public checkout (creates order)
     Route::post('stores/{storeSerial}/checkout', [OrderController::class, 'checkout']);
@@ -321,14 +329,12 @@ Route::prefix('v1')->group(function () {
 
     // Public MercadoPago preference, status and cancellation (session-based)
     Route::post('stores/{storeSerial}/orders/{order}/pay', [OrderController::class, 'publicPaymentPreference']);
+    Route::get('stores/{storeSerial}/orders/{order}', [OrderController::class, 'publicOrderDetail']);
     Route::get('stores/{storeSerial}/orders/{order}/status', [OrderController::class, 'publicPaymentStatus']);
     Route::post('stores/{storeSerial}/orders/{order}/cancel', [OrderController::class, 'publicCancel']);
 
     // Public custom page
     Route::get('pages/{slug}', [CustomPageController::class, 'showBySlug']);
-
-    // Public order detail (session-based, for thank-you page)
-    Route::get('public/orders/{id}', [OrderController::class, 'publicOrderDetail']);
 
     // Public chat (customer)
     Route::post('chat/start', [ChatController::class, 'customerConversation']);

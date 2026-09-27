@@ -52,8 +52,11 @@ class CancelOrder
                     'reversed' => false,
                 ]);
             }
-            if ($actorType === 'customer' && $fresh->isPaid()) {
-                return ['error' => 'Una orden pagada no puede cancelarse publicamente.', 'status' => 422];
+            if ($actorType === 'customer' && $fresh->blocksCustomerCancellation()) {
+                return [
+                    'error' => 'Una orden pagada o con excepcion de cobro no puede cancelarse publicamente.',
+                    'status' => 422,
+                ];
             }
             // Fail-closed: un pago con comprobante en revision no se cancela
             // ni restoca hasta que finanzas lo resuelva (evita doble salida).
@@ -61,7 +64,10 @@ class CancelOrder
                 return ['error' => 'El pago tiene un comprobante en revision.', 'status' => 409];
             }
 
-            $wasPaid = $fresh->isPaid();
+            // Fondos realmente cobrados (o cobro parcial registrado): la
+            // cancelacion por el dueno debe marcar refund_pending. Un pago en
+            // payment_exception SIN monto cobrado no exige reembolso.
+            $fundsTracked = $fresh->isPaid() || (float) ($payment?->amount_paid ?? 0) > 0;
             $restored = false;
             $reversed = false;
             $items = Cart::where('orderC', $fresh->order)->orderBy('id')->lockForUpdate()->get();
@@ -77,7 +83,7 @@ class CancelOrder
                     'idempotent' => true,
                     'restocked' => false,
                     'reversed' => false,
-                    'refund_required' => $wasPaid,
+                    'refund_required' => $fundsTracked,
                 ];
                 if ($eventKey !== null) {
                     $this->idempotency->record($fresh, $storeId, $actorId, $actorType, 'order_cancelled', $eventKey, $hash, ['status' => 'cancelled'], ['status' => 'cancelled'], 200, $response);
@@ -106,7 +112,7 @@ class CancelOrder
             if ($shipping && (string) $shipping->status !== ShippingOrder::STATUS_CANCELLED) {
                 $shipping->update(['status' => ShippingOrder::STATUS_CANCELLED]);
             }
-            if ($wasPaid && $payment && $payment->status !== 'refunded') {
+            if ($fundsTracked && $payment && $payment->status !== 'refunded') {
                 $payment->update(['status' => 'refund_pending', 'refund_requested_at' => now()]);
             }
             $fresh->order_state = PurchaseOrder::STATE_CANCELLED;
@@ -118,7 +124,7 @@ class CancelOrder
                 'idempotent' => false,
                 'restocked' => $restored,
                 'reversed' => $reversed,
-                'refund_required' => $wasPaid,
+                'refund_required' => $fundsTracked,
                 'return_pending' => $departed,
             ];
             if ($eventKey !== null) {

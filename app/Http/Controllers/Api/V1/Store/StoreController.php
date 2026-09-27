@@ -3,16 +3,26 @@
 namespace App\Http\Controllers\Api\V1\Store;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Store\PaymentSettingsRequest;
+use App\Http\Requests\Store\UnlockCatalogRequest;
+use App\Http\Resources\PublicStoreResource;
 use App\Http\Resources\StoreExtraResource;
 use App\Http\Resources\StoreResource;
+use App\Models\MediaPhoto;
+use App\Models\MediaVideo;
 use App\Models\Store;
 use App\Models\StoreColor;
 use App\Models\StoreExtra;
 use App\Models\StoreFeature;
 use App\Models\StorePassword;
+use App\Models\StorePaymentSetting;
 use App\Models\StoreTheme;
+use App\Services\StoreCatalogCapability;
+use App\Services\StorePaymentMethods;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 
 class StoreController extends Controller
 {
@@ -41,7 +51,7 @@ class StoreController extends Controller
         ]);
 
         // Allow passing 'logo' as alias for 'logojpg'
-        if ($request->has('logo') && !$request->has('logojpg')) {
+        if ($request->has('logo') && ! $request->has('logojpg')) {
             $validated['logojpg'] = $request->logo;
         }
 
@@ -72,6 +82,7 @@ class StoreController extends Controller
 
         if ($request->isMethod('get')) {
             $extra = StoreExtra::where('idTienda', $store->id)->first();
+
             return response()->json(['data' => $extra ? StoreExtraResource::make($extra) : null]);
         }
 
@@ -95,13 +106,15 @@ class StoreController extends Controller
             'sections' => ['nullable', 'string'],
         ]);
 
-        $extra = StoreExtra::where('idTienda', $store->id)->first();
-
         // Only include fields that were actually sent in the request
         $data = [];
         foreach ($validated as $key => $value) {
-            if ($key === 'sections') continue; // handled separately below
-            if (!$request->has($key)) continue;
+            if ($key === 'sections') {
+                continue;
+            } // handled separately below
+            if (! $request->has($key)) {
+                continue;
+            }
             $columnMap = [
                 'nombre_tienda' => 'nombreTienda',
                 'horario' => 'horario',
@@ -136,12 +149,17 @@ class StoreController extends Controller
             $data['sections'] = $all['sections'];
         }
 
-        if ($extra) {
-            $extra->update($data);
-        } else {
-            $data['idTienda'] = $store->id;
-            $extra = StoreExtra::create($data);
-        }
+        $extra = DB::transaction(function () use ($request, $data) {
+            $store = Store::byOwner($request->user()->name)->lockForUpdate()->firstOrFail();
+            $extra = StoreExtra::where('idTienda', $store->id)->lockForUpdate()->first();
+            if ($extra) {
+                $extra->update($data);
+
+                return $extra;
+            }
+
+            return StoreExtra::create($data + ['idTienda' => $store->id]);
+        });
 
         return response()->json([
             'data' => StoreExtraResource::make($extra->fresh()),
@@ -182,6 +200,7 @@ class StoreController extends Controller
 
         if ($request->isMethod('get')) {
             $colors = StoreColor::where('idStore', $store->id)->first();
+
             return response()->json(['data' => $colors]);
         }
 
@@ -216,6 +235,7 @@ class StoreController extends Controller
 
         if ($request->isMethod('get')) {
             $theme = StoreTheme::where('userId', $store->id)->first();
+
             return response()->json(['data' => $theme]);
         }
 
@@ -241,89 +261,135 @@ class StoreController extends Controller
     // Password protection for catalog
     public function catalogPassword(Request $request)
     {
-        $user = $request->user();
-        $store = Store::byOwner($user->name)->firstOrFail();
-
         if ($request->isMethod('get')) {
+            $store = Store::byOwner($request->user()->name)->firstOrFail();
             $pass = StorePassword::where('idTienda', $store->id)->first();
+
             return response()->json(['data' => ['has_password' => (bool) $pass]]);
         }
 
         $request->validate(['catalog_pass' => 'required|min:4']);
 
-        $pass = StorePassword::where('idTienda', $store->id)->first();
         $hash = Hash::make($request->catalog_pass);
+        DB::transaction(function () use ($request, $hash) {
+            $store = Store::byOwner($request->user()->name)->lockForUpdate()->firstOrFail();
+            $passwords = StorePassword::where('idTienda', $store->id)->lockForUpdate()->get();
+            abort_if($passwords->count() > 1, 409, 'La tienda tiene contraseñas de catálogo duplicadas.');
 
-        if ($pass) {
-            $pass->update(['keyMenu' => $hash]);
-        } else {
-            StorePassword::create([
-                'idTienda' => $store->id,
-                'keyMenu' => $hash,
-            ]);
-        }
+            $password = $passwords->first();
+            if ($password) {
+                $password->update(['keyMenu' => $hash]);
+            } else {
+                StorePassword::create(['idTienda' => $store->id, 'keyMenu' => $hash]);
+            }
+        });
 
         return response()->json(['message' => 'Contraseña del catálogo actualizada.']);
     }
 
     public function removeCatalogPassword(Request $request)
     {
-        $user = $request->user();
-        $store = Store::byOwner($user->name)->firstOrFail();
-
-        StorePassword::where('idTienda', $store->id)->delete();
+        DB::transaction(function () use ($request) {
+            $store = Store::byOwner($request->user()->name)->lockForUpdate()->firstOrFail();
+            $passwords = StorePassword::where('idTienda', $store->id)->lockForUpdate()->get();
+            abort_if($passwords->count() > 1, 409, 'La tienda tiene contraseñas de catálogo duplicadas.');
+            $passwords->each->delete();
+        });
 
         return response()->json(['message' => 'Contraseña del catálogo eliminada.']);
     }
 
-    public function verifyCatalogPassword(Request $request, $serial = null)
+    public function paymentSettings(Request $request)
     {
-        $request->validate([
-            'password' => ['required', 'string'],
-        ]);
+        $store = Store::byOwner($request->user()->name)->firstOrFail();
+        $enabled = Schema::hasTable('store_payment_settings')
+            ? (bool) StorePaymentSetting::where('store_id', $store->id)->value('cash_on_delivery_enabled')
+            : false;
 
-        $storeId = $request->store_id;
-        if (!$storeId && $serial) {
-            $store = Store::where('serial', $serial)->first();
-            $storeId = $store?->id;
-        }
-        if (!$storeId) {
-            return response()->json(['message' => 'Tienda no encontrada.'], 404);
-        }
+        return response()->json(['data' => ['cash_on_delivery_enabled' => $enabled]]);
+    }
 
-        $pass = StorePassword::where('idTienda', $storeId)->first();
+    public function updatePaymentSettings(PaymentSettingsRequest $request)
+    {
+        abort_if($request->user()->hasRole('super-admin'), 403, 'Superadmin es solo lectura para ajustes de pago.');
 
-        if (! $pass || ! Hash::check($request->password, $pass->keyMenu)) {
-            return response()->json(['message' => 'Contraseña incorrecta.'], 403);
-        }
+        $setting = DB::transaction(function () use ($request) {
+            $store = Store::byOwner($request->user()->name)->lockForUpdate()->firstOrFail();
+            $setting = StorePaymentSetting::where('store_id', $store->id)->lockForUpdate()->first();
+            if (! $setting) {
+                $setting = StorePaymentSetting::create([
+                    'store_id' => $store->id,
+                    'cash_on_delivery_enabled' => false,
+                ]);
+            }
+            $setting->update([
+                'cash_on_delivery_enabled' => $request->validated('cash_on_delivery_enabled'),
+            ]);
 
-        return response()->json(['message' => 'Acceso concedido.']);
+            return $setting->fresh();
+        });
+
+        return response()->json(['data' => [
+            'cash_on_delivery_enabled' => (bool) $setting->cash_on_delivery_enabled,
+        ]]);
+    }
+
+    public function unlockCatalog(
+        UnlockCatalogRequest $request,
+        string $serial,
+        StoreCatalogCapability $capabilities,
+    ) {
+        $result = DB::transaction(function () use ($request, $serial, $capabilities) {
+            $stores = Store::whereRaw('LOWER(serial) = ?', [mb_strtolower($serial)])
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            abort_unless($stores->count() === 1, 404);
+            $store = $stores->first();
+            $passwords = StorePassword::where('idTienda', $store->id)->lockForUpdate()->get();
+            if ($passwords->count() !== 1) {
+                return null;
+            }
+            $password = $passwords->first();
+            if (! Hash::check($request->validated('password'), $password->keyMenu)) {
+                return null;
+            }
+
+            return $capabilities->issue($store, $password);
+        });
+
+        return $result
+            ? response()->json(['data' => $result])
+            : response()->json(['message' => 'Contraseña incorrecta.'], 403);
     }
 
     // Features toggle (shipping form)
     public function featureToggle(Request $request)
     {
-        $user = $request->user();
-        $store = Store::byOwner($user->name)->firstOrFail();
-
         $request->validate([
             'component_id' => ['required', 'integer'],
             'active' => ['required', 'boolean'],
         ]);
 
-        $feature = StoreFeature::where('idTienda', $store->id)
-            ->where('idComponent', $request->component_id)
-            ->first();
+        $feature = DB::transaction(function () use ($request) {
+            $store = Store::byOwner($request->user()->name)->lockForUpdate()->firstOrFail();
+            $feature = StoreFeature::where('idTienda', $store->id)
+                ->where('idComponent', $request->component_id)
+                ->lockForUpdate()
+                ->first();
 
-        if ($feature) {
-            $feature->update(['active' => $request->active]);
-        } else {
-            $feature = StoreFeature::create([
+            if ($feature) {
+                $feature->update(['active' => $request->active]);
+
+                return $feature;
+            }
+
+            return StoreFeature::create([
                 'idTienda' => $store->id,
                 'idComponent' => $request->component_id,
                 'active' => $request->active,
             ]);
-        }
+        });
 
         return response()->json([
             'data' => $feature,
@@ -350,6 +416,7 @@ class StoreController extends Controller
         if ($request->isMethod('get')) {
             $costs = $store->color; // Format: "10|4|10|1" (base|medio|largo|tiempo)
             $parts = explode('|', $costs);
+
             return response()->json([
                 'data' => [
                     'precio_base' => $parts[0] ?? '10',
@@ -383,6 +450,7 @@ class StoreController extends Controller
     private function parseShippingCosts($store)
     {
         $parts = explode('|', $store->color ?? '');
+
         return [
             'base' => floatval($parts[0] ?? 10),
             'medio' => floatval($parts[1] ?? 4),
@@ -390,37 +458,63 @@ class StoreController extends Controller
         ];
     }
 
-    public function publicTheme($serial)
-    {
-        $store = Store::with('extra')->where('serial', $serial)->firstOrFail();
+    public function publicTheme(
+        Request $request,
+        $serial,
+        StoreCatalogCapability $capabilities,
+        StorePaymentMethods $paymentMethods,
+    ) {
+        $stores = Store::with(['extra', 'password'])
+            ->whereRaw('LOWER(serial) = ?', [mb_strtolower($serial)])
+            ->limit(2)
+            ->get();
+        abort_unless($stores->count() === 1, 404);
+        $store = $stores->first();
         $theme = StoreTheme::where('userId', $store->id)->first();
-        $hasPassword = StorePassword::where('idTienda', $store->id)->exists();
-        $photos = \App\Models\MediaPhoto::where('idLog', $store->owner->id ?? 0)->orderByDesc('id')->limit(12)->get();
-        $videos = \App\Models\MediaVideo::where('idLog', $store->owner->id ?? 0)->orderByDesc('id')->limit(6)->get();
-        $sections = null;
-        if ($store->extra && $store->extra->sections) {
-            try { $sections = json_decode($store->extra->sections, true); } catch(\Exception $e) {}
-        }
-        $colors = \App\Models\StoreColor::where('idStore', $store->id)->first();
-        $features = StoreFeature::where('idTienda', $store->id)->get();
-        return response()->json(['data' => [
-            'tema_id' => $theme->temaId ?? 1,
-            'extra' => $store->extra ? StoreExtraResource::make($store->extra) : null,
+        $hasPassword = $capabilities->isProtected($store);
+        $colors = StoreColor::where('idStore', $store->id)->first();
+        $safe = [
             'has_password' => $hasPassword,
+            'catalog_locked' => $hasPassword,
+            'name' => $this->safeStoreName($store),
             'colors' => $colors ? [
                 'primary' => $colors->coloruno, 'secondary' => $colors->colordos,
                 'success' => $colors->colortres, 'dark' => $colors->colorcuatro, 'light' => $colors->colorcinco,
             ] : null,
+        ];
+
+        $capability = $request->header('X-Store-Capability');
+        if ($hasPassword && (! is_string($capability) || trim($capability) === '')) {
+            return response()->json(['data' => $safe]);
+        }
+        $capabilities->authorize($store, $capability);
+
+        $photos = MediaPhoto::where('idLog', $store->owner->id ?? 0)->orderByDesc('id')->limit(12)->get();
+        $videos = MediaVideo::where('idLog', $store->owner->id ?? 0)->orderByDesc('id')->limit(6)->get();
+        $sections = null;
+        if ($store->extra && $store->extra->sections) {
+            try {
+                $sections = json_decode($store->extra->sections, true);
+            } catch (\Exception $e) {
+            }
+        }
+        $features = StoreFeature::where('idTienda', $store->id)->get();
+
+        return response()->json(['data' => array_merge($safe, [
+            'catalog_locked' => false,
+            'tema_id' => $theme->temaId ?? 1,
+            'extra' => $store->extra ? StoreExtraResource::make($store->extra) : null,
             'features' => [
-                'shipping' => $features->isEmpty() ? true : $features->contains(fn($f) => $f->idComponent == 1 && $f->active == 1),
-                'pickup' => $features->isEmpty() ? true : $features->contains(fn($f) => $f->idComponent == 2 && $f->active == 1),
-                'national_shipping' => $features->contains(fn($f) => $f->idComponent == 3 && $f->active == 1),
+                'shipping' => $features->isEmpty() ? true : $features->contains(fn ($f) => $f->idComponent == 1 && $f->active == 1),
+                'pickup' => $features->isEmpty() ? true : $features->contains(fn ($f) => $f->idComponent == 2 && $f->active == 1),
+                'national_shipping' => $features->contains(fn ($f) => $f->idComponent == 3 && $f->active == 1),
             ],
             'shipping_costs' => $this->parseShippingCosts($store),
             'location' => ['lat' => $store->lat, 'lng' => $store->long, 'adress' => $store->adress],
-            'gallery' => ['photos' => $photos->map(fn($p) => $p->urlFoto), 'videos' => $videos->map(fn($v) => $v->urlVideo)],
+            'gallery' => ['photos' => $photos->map(fn ($p) => $p->urlFoto), 'videos' => $videos->map(fn ($v) => $v->urlVideo)],
             'sections' => $sections,
-        ]]);
+            'payment_methods' => $paymentMethods->resolve($store),
+        ])]);
     }
 
     // Public availability
@@ -428,17 +522,26 @@ class StoreController extends Controller
     {
         $store = Store::with('extra')->where('serial', $serial)->firstOrFail();
         $extra = $store->extra;
+
         return response()->json(['data' => [
             'booking_days' => $extra->booking_days ?? null,
             'booking_hours' => $extra->booking_hours ?? '09:00-18:00',
         ]]);
     }
 
-    // Public store info
+    // Public store info (contrato minimo sin PII, D1 aprobado)
     public function publicShow($serial)
     {
         $store = Store::with('extra')->where('serial', $serial)->firstOrFail();
-        return response()->json(['data' => StoreResource::make($store)]);
+
+        return response()->json(['data' => PublicStoreResource::make($store)]);
+    }
+
+    private function safeStoreName(Store $store): string
+    {
+        $name = trim(strip_tags((string) $store->extra?->nombreTienda));
+
+        return $name === '' ? 'Tienda' : mb_substr($name, 0, 255);
     }
 
     // Ratings
